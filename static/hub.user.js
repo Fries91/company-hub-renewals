@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Hub Overlay 🏦⚔️ (Company Hub + War Hub) [Banker Theme + Briefcase Drag + 5-Day Warning]
+// @name         Hub Overlay 🏦⚔️ (Company Hub + War Hub) [Banker Theme + Briefcase Drag + Bubble Alerts]
 // @namespace    hub-overlay
-// @version      2.3.0
-// @description  Company Hub: 100 Xanax renewals + records + delete. Adds 5-day-left warning alerts (toast + list) and a "Copy 5-day message" + "Message" buttons.
+// @version      2.4.0
+// @description  Company Hub: 100 Xanax renewals + records + delete. 5-day-left warning alerts. ✅ Adds notification bubble on the badge for open renewals + open warnings.
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_addStyle
@@ -100,6 +100,40 @@
       user-select: none;
       -webkit-user-select:none;
       touch-action: none;
+    }
+
+    /* ✅ Notification bubble */
+    #hub-bubble{
+      position:absolute;
+      top:-7px;
+      right:-7px;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      font-size: 11px;
+      font-weight: 1000;
+      letter-spacing: 0.2px;
+      border: 1px solid rgba(255,255,255,0.55);
+      box-shadow: 0 10px 18px rgba(0,0,0,0.35);
+      user-select:none;
+      -webkit-user-select:none;
+      transform: translateZ(0);
+    }
+    /* renewals-only bubble (gold) */
+    #hub-bubble.hub-bubble-renew{
+      background: linear-gradient(180deg, rgba(255,226,140,0.98), rgba(255,211,106,0.92));
+      color: #0b1a2b;
+      border-color: rgba(10,24,40,0.35);
+    }
+    /* warnings bubble (red) takes priority */
+    #hub-bubble.hub-bubble-warn{
+      background: linear-gradient(180deg, rgba(255,120,120,0.98), rgba(208,70,70,0.92));
+      color: #fff;
+      border-color: rgba(255,255,255,0.35);
     }
 
     #hub-panel {
@@ -250,6 +284,13 @@
   const badge = document.createElement("div");
   badge.id = "hub-badge";
   badge.textContent = "🏦";
+
+  // ✅ bubble element
+  const bubble = document.createElement("div");
+  bubble.id = "hub-bubble";
+  bubble.textContent = "";
+  badge.appendChild(bubble);
+
   document.body.appendChild(badge);
 
   const panel = document.createElement("div");
@@ -283,6 +324,32 @@
     t.textContent = msg;
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 4200);
+  }
+
+  // ✅ bubble updater:
+  // - shows total open items
+  // - red if any warnings exist, otherwise gold for renewals
+  function updateBubble(openRenewalsCount, openAlertsCount) {
+    const r = Math.max(0, parseInt(openRenewalsCount || 0, 10));
+    const a = Math.max(0, parseInt(openAlertsCount || 0, 10));
+    const total = r + a;
+
+    if (total <= 0) {
+      bubble.style.display = "none";
+      bubble.textContent = "";
+      bubble.classList.remove("hub-bubble-renew", "hub-bubble-warn");
+      bubble.title = "";
+      return;
+    }
+
+    bubble.style.display = "flex";
+    bubble.textContent = total > 99 ? "99+" : String(total);
+
+    bubble.classList.remove("hub-bubble-renew", "hub-bubble-warn");
+    if (a > 0) bubble.classList.add("hub-bubble-warn");
+    else bubble.classList.add("hub-bubble-renew");
+
+    bubble.title = `${r} renewal(s) open, ${a} warning(s) open`;
   }
 
   function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
@@ -390,6 +457,9 @@
     }
 
     badge.textContent = (main === "company") ? "🏦" : "⚔️";
+    // re-attach bubble after textContent wipe
+    badge.appendChild(bubble);
+
     panel.querySelector("#hub-title-text").textContent = (main === "company") ? "Company Hub" : "War Hub";
   }
   updateTabsUI();
@@ -397,12 +467,8 @@
   let lastState = null;
 
   async function copyToClipboard(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      return false;
-    }
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch { return false; }
   }
 
   function renderAlerts(data) {
@@ -448,8 +514,7 @@
           showToast("Fetching warning…");
           apiGetWarnPayload(senderId, async (err, payload) => {
             if (err || !payload || !payload.ok) return showToast("Could not get warning payload.");
-            const txt = payload.message_body;
-            const ok = await copyToClipboard(txt);
+            const ok = await copyToClipboard(payload.message_body);
             showToast(ok ? "Warning copied ✅" : "Clipboard blocked — copy manually.");
           });
         });
@@ -489,7 +554,6 @@
     const records = data.renewals_records || [];
     const list = (sub === "records") ? records : open;
 
-    // alerts section on top (only in Company Hub)
     const alertsHTML = renderAlerts(data);
 
     if (!list.length && !alertsHTML) {
@@ -499,9 +563,7 @@
 
     const listHTML = list.map(r => {
       const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
-      const doneBadge = r.done
-        ? `<div class="hub-muted">Status: ✅ Done</div>`
-        : `<div class="hub-muted">Status: ⏳ Open</div>`;
+      const doneBadge = r.done ? `<div class="hub-muted">Status: ✅ Done</div>` : `<div class="hub-muted">Status: ⏳ Open</div>`;
       const doneBtn = (!r.done && sub === "renewals") ? `<button class="hub-btn good hub-done">Renewed ✅</button>` : "";
       const deleteBtn = (sub === "records") ? `<button class="hub-btn bad hub-del">Delete</button>` : "";
       const doneLine = r.done ? `<div class="hub-muted">Marked done: ${fmtDate(r.done_at || "")}</div>` : "";
@@ -529,10 +591,8 @@
 
     body.innerHTML = `${alertsHTML}${listHTML}`;
 
-    // wire alert buttons (if any)
     wireAlertButtons(body);
 
-    // wire renewals buttons
     body.querySelectorAll(".hub-card[data-eid]").forEach(card => {
       const eid = card.dataset.eid;
       const r = list.find(x => x.event_id === eid);
@@ -633,7 +693,6 @@
     }
   }
 
-  // ✅ new: toast on new alerts
   function checkForAlertToasts(alertsOpen) {
     const seen = new Set(gmGetJSON(STORAGE_SEEN_ALERTS, []));
     let fired = 0;
@@ -646,7 +705,7 @@
       const left = (a.remaining_days ?? "?");
       showToast(`⚠️ ${left} day(s) left — Hub access for [${sid}]`);
       seen.add(aid);
-      if (fired >= 3) break; // avoid spam toasts
+      if (fired >= 3) break;
     }
 
     if (fired > 0) {
@@ -659,8 +718,14 @@
       if (err || !data) return;
       lastState = data;
 
-      checkForNewToast(data.renewals_open || []);
-      checkForAlertToasts(data.alerts_open || []);
+      const openRenewals = data.renewals_open || [];
+      const openAlerts = data.alerts_open || [];
+
+      // ✅ bubble counts (renewals + warnings)
+      updateBubble(openRenewals.length, openAlerts.length);
+
+      checkForNewToast(openRenewals);
+      checkForAlertToasts(openAlerts);
 
       if (forceRender || panel.style.display !== "none") render();
     });
