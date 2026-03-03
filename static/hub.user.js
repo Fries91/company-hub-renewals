@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Hub Overlay 🏦⚔️ (Company Hub + War Hub) [Banker Theme + Briefcase Drag]
+// @name         Hub Overlay 🏦⚔️ (Company Hub + War Hub) [Banker Theme + Briefcase Drag + Reply w/ Days Left]
 // @namespace    hub-overlay
-// @version      2.1.0
-// @description  Company Hub: 100 Xanax renewals + records + delete. War Hub placeholder tab. Banker/business theme + briefcase-style drag + compact size.
+// @version      2.2.0
+// @description  Company Hub: 100 Xanax renewals + records + delete. War Hub placeholder tab. Banker theme + briefcase drag. Copy reply pulls server-calculated X days left per sender_id.
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_addStyle
@@ -20,15 +20,15 @@
   // ============================================================
 
   const STORAGE_SEEN = "hub_seen_event_ids_v1";
-  const STORAGE_POS  = "hub_overlay_pos_v2"; // v2 so your new size/feel starts fresh
+  const STORAGE_POS  = "hub_overlay_pos_v2";
   const STORAGE_MAIN = "hub_active_main_tab_v1";  // company | war
   const STORAGE_SUB  = "hub_active_company_subtab_v1"; // renewals | records
   const POLL_MS = 15000;
 
   // Briefcase-like drag tuning
-  const DRAG_THRESHOLD_PX = 6;   // move more than this to count as drag (prevents accidental opens)
-  const PANEL_GAP = 10;          // gap between badge and panel
-  const BADGE_SIZE = 40;         // same size feel as your briefcase (compact)
+  const DRAG_THRESHOLD_PX = 6;
+  const PANEL_GAP = 10;
+  const BADGE_SIZE = 40;
 
   function gmGetJSON(key, fallback) {
     try {
@@ -73,8 +73,11 @@
     });
   }
 
-  // ======= Banker / business theme =======
-  // Palette: navy + brass + marble paper + subtle pinstripe
+  // NEW: get reply payload (server computes X days left)
+  function apiGetReplyPayload(senderId, cb) {
+    apiGet(`/api/reply_payload?sender_id=${encodeURIComponent(String(senderId))}`, cb);
+  }
+
   GM_addStyle(`
     #hub-badge {
       position: fixed;
@@ -91,13 +94,13 @@
       font-size: 20px;
       user-select: none;
       -webkit-user-select:none;
-      touch-action: none; /* important for smooth drag on mobile */
+      touch-action: none;
     }
 
     #hub-panel {
       position: fixed;
       z-index: 999999;
-      width: 332px;               /* smaller/briefcase-sized */
+      width: 332px;
       max-height: 68vh;
       overflow: auto;
       border-radius: 14px;
@@ -192,8 +195,7 @@
       border-radius: 12px;
       padding: 10px;
       margin-bottom: 10px;
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.78), rgba(245,246,248,0.78));
+      background: linear-gradient(180deg, rgba(255,255,255,0.78), rgba(245,246,248,0.78));
       box-shadow: 0 10px 22px rgba(0,0,0,0.10);
     }
     .hub-muted{ opacity:0.72; font-size: 12px; }
@@ -238,14 +240,13 @@
       font-weight: 1000;
     }
 
-    /* Compact scroll */
     #hub-panel::-webkit-scrollbar { width: 10px; }
     #hub-panel::-webkit-scrollbar-thumb { background: rgba(10,24,40,0.20); border-radius: 10px; }
   `);
 
   const badge = document.createElement("div");
   badge.id = "hub-badge";
-  badge.textContent = "🏦"; // business banker feel
+  badge.textContent = "🏦";
   document.body.appendChild(badge);
 
   const panel = document.createElement("div");
@@ -291,8 +292,6 @@
 
   function applyPos(xy) {
     const p = xy || loadPos();
-
-    // keep badge in viewport a bit
     const maxX = Math.max(6, window.innerWidth - BADGE_SIZE - 6);
     const maxY = Math.max(6, window.innerHeight - BADGE_SIZE - 6);
 
@@ -302,7 +301,6 @@
     badge.style.left = x + "px";
     badge.style.top = y + "px";
 
-    // panel placement: try to the right; if no room, place left
     const panelW = 332;
     const rightX = x + BADGE_SIZE + PANEL_GAP;
     const leftX  = x - panelW - PANEL_GAP;
@@ -314,13 +312,9 @@
     panel.style.top  = py + "px";
   }
 
-  // initial
   applyPos();
-
-  // Re-apply on resize/orientation
   window.addEventListener("resize", () => applyPos(loadPos()));
 
-  // ======= Briefcase-style drag: no accidental opens =======
   let drag = null;
   let didDrag = false;
 
@@ -342,31 +336,26 @@
 
     const x = Math.round(drag.pos.x + dx);
     const y = Math.round(drag.pos.y + dy);
-
     applyPos({ x, y });
   });
 
   function endDrag() {
     if (!drag) return;
-    // save latest badge pos
     const x = parseInt(badge.style.left, 10) || 14;
     const y = parseInt(badge.style.top, 10) || 160;
     savePos(x, y);
     drag = null;
   }
 
-  badge.addEventListener("pointerup", (e) => {
+  badge.addEventListener("pointerup", () => {
     endDrag();
-    // If it was a drag, do NOT toggle panel
     if (didDrag) return;
-    // Tap/click toggles panel
     panel.style.display = (panel.style.display === "none") ? "block" : "none";
     if (panel.style.display !== "none") render();
   });
 
   badge.addEventListener("pointercancel", endDrag);
 
-  // Also allow tapping the header crest/title area to quickly close/open (banker app feel)
   panel.querySelector("#hub-title").addEventListener("click", () => {
     panel.style.display = "none";
   });
@@ -397,7 +386,6 @@
       subBar.style.display = "none";
     }
 
-    // Badge icon swaps but stays banker vibe
     badge.textContent = (main === "company") ? "🏦" : "⚔️";
     panel.querySelector("#hub-title-text").textContent = (main === "company") ? "Company Hub" : "War Hub";
   }
@@ -405,17 +393,23 @@
 
   let lastState = null;
 
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function renderCompany(data) {
     const body = panel.querySelector("#hub-body");
     const sub = getSub();
-    const renewDays = data.renew_days || 45;
+    const renewDays = data.renew_days || 60;
 
     const open = data.renewals_open || [];
     const records = data.renewals_records || [];
     const list = (sub === "records") ? records : open;
-
-    const replyText =
-      `Renewed for another ${renewDays} days thank you for using my service's other to come check out my profile signature for updates of hubs.`;
 
     if (!list.length) {
       body.innerHTML = `<div class="hub-muted">${sub === "records" ? "No records yet." : "No new renewals right now."}</div>`;
@@ -431,6 +425,9 @@
       const deleteBtn = (sub === "records") ? `<button class="hub-btn bad hub-del">Delete</button>` : "";
       const doneLine = r.done ? `<div class="hub-muted">Marked done: ${fmtDate(r.done_at || "")}</div>` : "";
 
+      // NEW: "Message" button (opens compose URL with the exact payload available)
+      const msgBtn = r.sender_id ? `<button class="hub-btn good hub-msg">Message</button>` : "";
+
       return `
         <div class="hub-card" data-eid="${r.event_id}">
           <div class="hub-big">🏦 Renewal posted — +${renewDays} days</div>
@@ -441,7 +438,8 @@
           ${doneBadge}
           ${doneLine}
           <div class="hub-btns">
-            <button class="hub-btn hub-copy">Copy reply</button>
+            <button class="hub-btn hub-copy">Copy reply (X days)</button>
+            ${msgBtn}
             <button class="hub-btn hub-open">Open profile</button>
             ${doneBtn}
             ${deleteBtn}
@@ -455,16 +453,39 @@
       const r = list.find(x => x.event_id === eid);
       if (!r) return;
 
-      card.querySelector(".hub-copy").addEventListener("click", async () => {
-        const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
-        const txt = `Hi ${who},\n\n${replyText}\n\n—`;
-        try {
-          await navigator.clipboard.writeText(txt);
-          showToast("Reply copied ✅");
-        } catch {
-          showToast("Clipboard blocked — copy manually.");
-        }
+      // ✅ Copy reply now pulls /api/reply_payload so X days left is accurate
+      card.querySelector(".hub-copy").addEventListener("click", () => {
+        if (!r.sender_id) return showToast("No sender ID found.");
+
+        showToast("Fetching reply…");
+        apiGetReplyPayload(r.sender_id, async (err, payload) => {
+          if (err || !payload || !payload.ok) return showToast("Could not get reply payload.");
+
+          const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
+          const txt = `Hi ${who},\n\n${payload.message_body}\n—`;
+
+          const ok = await copyToClipboard(txt);
+          if (ok) showToast(`Reply copied ✅ (${payload.remaining_days ?? "?"} day(s) left)`);
+          else showToast("Clipboard blocked — copy manually.");
+        });
       });
+
+      // ✅ Message button opens compose + also copies message body
+      const msgBtn = card.querySelector(".hub-msg");
+      if (msgBtn) {
+        msgBtn.addEventListener("click", () => {
+          showToast("Preparing message…");
+          apiGetReplyPayload(r.sender_id, async (err, payload) => {
+            if (err || !payload || !payload.ok) return showToast("Could not get reply payload.");
+
+            const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
+            const txt = `Hi ${who},\n\n${payload.message_body}\n—`;
+            await copyToClipboard(txt); // best effort
+            if (payload.compose_url) window.open(payload.compose_url, "_blank");
+            showToast(`Message ready ✅ (${payload.remaining_days ?? "?"} day(s) left)`);
+          });
+        });
+      }
 
       card.querySelector(".hub-open").addEventListener("click", () => {
         if (!r.sender_id) return showToast("No sender ID found.");
@@ -514,7 +535,6 @@
     }
 
     updateTabsUI();
-
     if (getMain() === "company") renderCompany(data);
     else renderWar();
   }
@@ -541,12 +561,10 @@
       lastState = data;
 
       checkForNewToast(data.renewals_open || []);
-
       if (forceRender || panel.style.display !== "none") render();
     });
   }
 
-  // start
   poll(true);
   setInterval(() => poll(false), POLL_MS);
 })();
