@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from db import (
     init_db, add_renewal_if_new, get_open_renewals, get_all_renewals,
-    mark_done, get_setting, set_setting
+    mark_done, delete_record, get_setting, set_setting
 )
 from torn_api import fetch_events, extract_xanax_payment
 
@@ -42,7 +42,6 @@ def poll_loop():
             _last_poll_error = None
 
             events = (data or {}).get("events") or {}
-
             last_ts = int(get_setting(SET_LAST_TS, "0") or "0")
 
             items = []
@@ -63,8 +62,7 @@ def poll_loop():
                 ev_text = (ev.get("event") or "")
                 match = extract_xanax_payment(ev_text, qty_required=100)
 
-                # advance checkpoint even if it's not a payment,
-                # so we don't re-scan the same history forever
+                # advance checkpoint even if not a payment
                 max_ts = max(max_ts, ts)
 
                 if not match:
@@ -107,14 +105,12 @@ def _start_once():
 
 
 def _json_ok(payload, code=200):
-    # consistent JSON response, avoids odd caching issues
     resp = jsonify(payload)
     resp.status_code = code
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
-# ✅ HEALTH: supports /health, /health/, /healthz, /healthz/
 @app.route("/health", methods=["GET"])
 @app.route("/health/", methods=["GET"])
 @app.route("/healthz", methods=["GET"])
@@ -151,6 +147,16 @@ def api_done():
     if not event_id:
         return _json_ok({"ok": False, "error": "Missing event_id"}, 400)
     ok = mark_done(event_id)
+    return _json_ok({"ok": ok})
+
+
+@app.route("/api/renewals/delete", methods=["POST"])
+def api_delete():
+    data = request.get_json(force=True, silent=True) or {}
+    event_id = str(data.get("event_id") or "").strip()
+    if not event_id:
+        return _json_ok({"ok": False, "error": "Missing event_id"}, 400)
+    ok = delete_record(event_id)
     return _json_ok({"ok": ok})
 
 
