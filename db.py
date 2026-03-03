@@ -35,7 +35,7 @@ def init_db():
     )
     """)
 
-    # safe alters for older DBs
+    # safe alters if DB existed earlier
     for stmt in [
         "ALTER TABLE renewals ADD COLUMN done INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE renewals ADD COLUMN done_at_iso TEXT",
@@ -99,6 +99,16 @@ def mark_done(event_id: str) -> bool:
         "UPDATE renewals SET done=1, done_at_iso=datetime('now') WHERE event_id=?",
         (event_id,),
     )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def delete_record(event_id: str) -> bool:
+    con = _con()
+    cur = con.cursor()
+    cur.execute("DELETE FROM renewals WHERE event_id=?", (event_id,))
     changed = cur.rowcount > 0
     con.commit()
     con.close()
