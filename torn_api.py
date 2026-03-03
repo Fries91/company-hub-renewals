@@ -1,74 +1,75 @@
+# torn_api.py ✅ COMPLETE: fetch events + detect "sent you 100 Xanax" payments
 import re
-import html
 import requests
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Any, Optional
 
 API_BASE = "https://api.torn.com"
 
 
 def fetch_events(api_key: str, limit: int = 100) -> Dict[str, Any]:
-    # Pull recent events every time (reliable, even if you viewed events)
-    url = f"{API_BASE}/user/?selections=events&limit={limit}&key={api_key}"
-    r = requests.get(url, timeout=20)
+    """
+    Pull user events from Torn API.
+    Note: Torn API is read-only; this is just fetching data.
+    """
+    params = {
+        "selections": "events",
+        "key": api_key,
+    }
+    # Official API returns up to 100-ish recent events; we just parse them.
+    url = f"{API_BASE}/user/"
+    r = requests.get(url, params=params, timeout=25)
     r.raise_for_status()
     return r.json()
 
 
-def _strip_html(s: str) -> str:
-    s = s or ""
-    s = html.unescape(s)
-    s = re.sub(r"<br\s*/?>", " ", s, flags=re.I)
-    s = re.sub(r"<[^>]+>", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def extract_xanax_payment(event_html: str, qty_required: int = 100) -> Optional[Dict[str, Any]]:
+def extract_xanax_payment(event_text: str, qty_required: int = 100) -> Optional[Dict[str, Any]]:
     """
-    Detect receiving EXACTLY qty_required Xanax from another player.
-    Handles formats like:
-      - "X sent you 100 Xanax"
-      - "X sent you 100x Xanax"
-      - HTML anchor tags with XID
+    Attempts to parse event text for:
+      - sender_id
+      - sender_name
+      - qty Xanax
+
+    Works with common Torn event formats like:
+      "<a ... XID=12345>NAME</a> sent you 100 Xanax."
+      "NAME [12345] sent you 100x Xanax"
     """
-    raw = event_html or ""
-    text = _strip_html(raw)
-
-    # Must mention Xanax
-    if re.search(r"\bXanax\b", text, re.I) is None:
+    if not event_text:
         return None
 
-    # Quantity patterns: "100 Xanax" or "100x Xanax" or "100 x Xanax"
-    m_qty = re.search(r"\b(\d+)\s*(?:x|×)?\s*Xanax\b", text, re.I)
-    if not m_qty:
-        # fallback: sometimes "Xanax (100)" style
-        m_qty = re.search(r"\bXanax\b.*\b(\d+)\b", text, re.I)
+    txt = event_text.replace("&nbsp;", " ")
 
-    if not m_qty:
+    # qty (supports "100 Xanax" or "100x Xanax")
+    m_qty = re.search(r"(\d+)\s*x?\s*Xanax\b", txt, re.IGNORECASE)
+    qty = int(m_qty.group(1)) if m_qty else None
+    if qty is None or qty < qty_required:
         return None
 
-    try:
-        qty = int(m_qty.group(1))
-    except Exception:
+    # sender_id via XID=12345 inside link
+    m_id = re.search(r"XID=(\d+)", txt)
+    sender_id = m_id.group(1) if m_id else None
+
+    # sender_name:
+    # try anchor inner text first: >Name<
+    m_name = re.search(r">([^<]{1,40})<", txt)
+    sender_name = (m_name.group(1).strip() if m_name else None)
+
+    # fallback: plain "Name [12345]" style
+    if not sender_name and sender_id:
+        m_name2 = re.search(r"([A-Za-z0-9_\-\.\'\s]{1,40})\s*\[\s*" + re.escape(sender_id) + r"\s*\]", txt)
+        sender_name = m_name2.group(1).strip() if m_name2 else None
+
+    # last fallback: Unknown
+    if not sender_name:
+        sender_name = "Unknown"
+
+    # Must look like a send/payment event to you
+    # (keeps false positives down)
+    if not re.search(r"\bsent you\b|\bgave you\b|\bhas sent\b", txt, re.IGNORECASE):
+        # some event formats omit "sent you"; if your events do, remove this guard.
         return None
 
-    if qty != qty_required:
-        return None
-
-    # Sender ID from href if present
-    sender_id = None
-    m_id = re.search(r"profiles\.php\?XID=(\d+)", raw, re.I)
-    if m_id:
-        sender_id = m_id.group(1)
-    else:
-        m_id2 = re.search(r"\bXID=(\d+)\b", raw, re.I)
-        if m_id2:
-            sender_id = m_id2.group(1)
-
-    # Sender name best-effort: try "NAME sent you"
-    sender_name = None
-    m_name = re.search(r"^(.{2,40}?)\s+(sent|gave)\s+you\b", text, re.I)
-    if m_name:
-        sender_name = m_name.group(1).strip()
-
-    return {"qty": qty, "sender_id": sender_id, "sender_name": sender_name}
+    return {
+        "sender_id": sender_id,
+        "sender_name": sender_name,
+        "qty": qty,
+    }
