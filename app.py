@@ -1,15 +1,27 @@
+# app.py ✅ COMPLETE: 60-day countdown (start or extend) + reply payload with X days left
 import os
 import time
 import threading
+import math
 from datetime import datetime, timezone, timedelta
 
 from flask import Flask, jsonify, request, send_from_directory, Response
 from dotenv import load_dotenv
 
 from db import (
-    init_db, add_renewal_if_new, get_open_renewals, get_all_renewals,
-    mark_done, delete_record, get_setting, set_setting
+    init_db,
+    add_renewal_if_new,
+    get_open_renewals,
+    get_all_renewals,
+    mark_done,
+    delete_record,
+    get_setting,
+    set_setting,
+    # NEW
+    get_subscription,
+    extend_subscription,
 )
+
 from torn_api import fetch_events, extract_xanax_payment
 
 load_dotenv()
@@ -17,7 +29,10 @@ app = Flask(__name__)
 
 TORN_API_KEY = (os.getenv("TORN_API_KEY") or "").strip()
 POLL_SECONDS = int(os.getenv("POLL_SECONDS") or "30")
-RENEW_DAYS = int(os.getenv("RENEW_DAYS") or "45")
+
+# ✅ 60 day countdown
+RENEW_DAYS = int(os.getenv("RENEW_DAYS") or "60")
+
 PORT = int(os.getenv("PORT") or "10000")
 
 _booted = False
@@ -73,8 +88,14 @@ def poll_loop():
                 qty = match.get("qty") or 100
 
                 received_at = datetime.fromtimestamp(ts, tz=timezone.utc)
-                renewed_until = received_at + timedelta(days=RENEW_DAYS)
 
+                # ✅ START or EXTEND sender countdown by 60 days
+                if sender_id:
+                    renewed_until = extend_subscription(str(sender_id), received_at, days=RENEW_DAYS)
+                else:
+                    renewed_until = received_at + timedelta(days=RENEW_DAYS)
+
+                # log the event (keeps open/records UI)
                 add_renewal_if_new(
                     event_id=eid,
                     sender_id=str(sender_id) if sender_id else None,
@@ -137,6 +158,94 @@ def state():
         "renewals_open": get_open_renewals(limit=50),
         "renewals_records": get_all_renewals(limit=300),
         "server_time": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+# ✅ status endpoint (remaining days/seconds)
+@app.route("/api/subscription/status", methods=["GET"])
+def api_sub_status():
+    sender_id = str(request.args.get("sender_id") or "").strip()
+    if not sender_id:
+        return _json_ok({"ok": False, "error": "Missing sender_id"}, 400)
+
+    sub = get_subscription(sender_id)
+    if not sub:
+        return _json_ok({"ok": True, "active": False, "sender_id": sender_id})
+
+    renewed_until_iso = sub["renewed_until"]
+    now = datetime.now(timezone.utc)
+
+    remaining_seconds = 0
+    remaining_days = 0
+    active = False
+
+    try:
+        renewed_until_dt = datetime.fromisoformat(renewed_until_iso.replace("Z", "+00:00"))
+        if renewed_until_dt.tzinfo is None:
+            renewed_until_dt = renewed_until_dt.replace(tzinfo=timezone.utc)
+        remaining_seconds = max(0, int((renewed_until_dt - now).total_seconds()))
+        remaining_days = int(math.ceil(remaining_seconds / 86400)) if remaining_seconds > 0 else 0
+        active = remaining_seconds > 0
+    except Exception:
+        pass
+
+    return _json_ok({
+        "ok": True,
+        "active": active,
+        "sender_id": sender_id,
+        "renewed_until": renewed_until_iso,
+        "remaining_seconds": remaining_seconds,
+        "remaining_days": remaining_days,
+        "server_time": now.isoformat(),
+    })
+
+
+# ✅ reply payload: "Renewal accepted — currently have X days left" + compose URL for that XID
+@app.route("/api/reply_payload", methods=["GET"])
+def api_reply_payload():
+    sender_id = str(request.args.get("sender_id") or "").strip()
+    if not sender_id:
+        return _json_ok({"ok": False, "error": "Missing sender_id"}, 400)
+
+    sub = get_subscription(sender_id)
+    renewed_until_iso = (sub or {}).get("renewed_until") or ""
+
+    now = datetime.now(timezone.utc)
+
+    remaining_seconds = 0
+    remaining_days = 0
+    active = False
+
+    if renewed_until_iso:
+        try:
+            renewed_until_dt = datetime.fromisoformat(renewed_until_iso.replace("Z", "+00:00"))
+            if renewed_until_dt.tzinfo is None:
+                renewed_until_dt = renewed_until_dt.replace(tzinfo=timezone.utc)
+            remaining_seconds = max(0, int((renewed_until_dt - now).total_seconds()))
+            remaining_days = int(math.ceil(remaining_seconds / 86400)) if remaining_seconds > 0 else 0
+            active = remaining_seconds > 0
+        except Exception:
+            pass
+
+    body = (
+        f"Renewal accepted ✅\n"
+        f"You currently have {remaining_days} day(s) left.\n"
+        f"Renewed until (UTC): {renewed_until_iso or 'N/A'}\n"
+        f"\nThank you for using my service.\n"
+        f"Other: come check out my profile signature for updates of hubs.\n"
+    )
+
+    compose_url = f"https://www.torn.com/messages.php#/p=compose&XID={sender_id}"
+
+    return _json_ok({
+        "ok": True,
+        "sender_id": sender_id,
+        "active": active,
+        "renewed_until": renewed_until_iso,
+        "remaining_days": remaining_days,
+        "message_body": body,
+        "compose_url": compose_url,
+        "server_time": now.isoformat(),
     })
 
 
