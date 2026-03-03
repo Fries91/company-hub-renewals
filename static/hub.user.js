@@ -1,15 +1,15 @@
 // ==UserScript==
-// @name         Hub Overlay 🏢⚔️ (Company Hub + War Hub)
+// @name         Hub Overlay 🏦⚔️ (Company Hub + War Hub) [Banker Theme + Briefcase Drag]
 // @namespace    hub-overlay
-// @version      2.0.0
-// @description  Company Hub: 100 Xanax renewals + records + delete. War Hub placeholder tab.
+// @version      2.1.0
+// @description  Company Hub: 100 Xanax renewals + records + delete. War Hub placeholder tab. Banker/business theme + briefcase-style drag + compact size.
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @connect      https://company-hub-renewals.onrender.com
+// @connect      company-hub-renewals.onrender.com
 // ==/UserScript==
 
 (function () {
@@ -20,10 +20,15 @@
   // ============================================================
 
   const STORAGE_SEEN = "hub_seen_event_ids_v1";
-  const STORAGE_POS  = "hub_overlay_pos_v1";
+  const STORAGE_POS  = "hub_overlay_pos_v2"; // v2 so your new size/feel starts fresh
   const STORAGE_MAIN = "hub_active_main_tab_v1";  // company | war
   const STORAGE_SUB  = "hub_active_company_subtab_v1"; // renewals | records
   const POLL_MS = 15000;
+
+  // Briefcase-like drag tuning
+  const DRAG_THRESHOLD_PX = 6;   // move more than this to count as drag (prevents accidental opens)
+  const PANEL_GAP = 10;          // gap between badge and panel
+  const BADGE_SIZE = 40;         // same size feel as your briefcase (compact)
 
   function gmGetJSON(key, fallback) {
     try {
@@ -68,125 +73,179 @@
     });
   }
 
+  // ======= Banker / business theme =======
+  // Palette: navy + brass + marble paper + subtle pinstripe
   GM_addStyle(`
     #hub-badge {
       position: fixed;
       z-index: 999999;
-      width: 44px; height: 44px;
+      width: ${BADGE_SIZE}px; height: ${BADGE_SIZE}px;
       border-radius: 12px;
-      background: linear-gradient(180deg, #111, #1b1b1b);
-      border: 1px solid rgba(255,255,255,0.12);
-      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      background:
+        radial-gradient(120% 120% at 20% 15%, rgba(255,226,140,0.45), rgba(0,0,0,0) 45%),
+        linear-gradient(180deg, #0b1a2b, #08121f);
+      border: 1px solid rgba(255,219,140,0.25);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.45);
       display:flex; align-items:center; justify-content:center;
       color: #ffd36a;
-      font-size: 22px;
+      font-size: 20px;
       user-select: none;
+      -webkit-user-select:none;
+      touch-action: none; /* important for smooth drag on mobile */
     }
+
     #hub-panel {
       position: fixed;
       z-index: 999999;
-      width: 360px;
-      max-height: 70vh;
+      width: 332px;               /* smaller/briefcase-sized */
+      max-height: 68vh;
       overflow: auto;
       border-radius: 14px;
-      background: rgba(15,15,15,0.94);
-      border: 1px solid rgba(255,255,255,0.12);
-      box-shadow: 0 14px 45px rgba(0,0,0,0.5);
-      color: #eee;
+
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.92), rgba(246,247,249,0.92)),
+        repeating-linear-gradient(90deg, rgba(10,24,40,0.04) 0, rgba(10,24,40,0.04) 2px, rgba(0,0,0,0) 2px, rgba(0,0,0,0) 10px);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+
+      border: 1px solid rgba(10,24,40,0.18);
+      box-shadow: 0 18px 55px rgba(0,0,0,0.45);
+      color: #0d1622;
       font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
     }
+
     #hub-panel header{
       padding: 10px 12px;
       display:flex; align-items:center; justify-content:space-between;
-      border-bottom: 1px solid rgba(255,255,255,0.10);
+      border-bottom: 1px solid rgba(10,24,40,0.12);
       position: sticky; top: 0;
-      background: rgba(15,15,15,0.98);
+      background: linear-gradient(180deg, rgba(11,26,43,0.98), rgba(8,18,31,0.98));
+      color: #f6f1e2;
       z-index: 5;
     }
-    #hub-title{ font-weight: 900; letter-spacing:0.3px; }
-    #hub-close{ cursor:pointer; opacity:0.9; padding:6px 9px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); }
+
+    #hub-title{
+      font-weight: 1000;
+      letter-spacing: 0.6px;
+      font-size: 13px;
+      display:flex;
+      align-items:center;
+      gap:8px;
+    }
+    #hub-title .crest{
+      width: 18px; height: 18px;
+      border-radius: 6px;
+      background: radial-gradient(120% 120% at 20% 20%, rgba(255,226,140,0.7), rgba(255,211,106,0.25) 55%, rgba(0,0,0,0) 70%),
+                  linear-gradient(180deg, rgba(255,219,140,0.35), rgba(0,0,0,0));
+      border: 1px solid rgba(255,219,140,0.35);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15);
+    }
+
+    #hub-close{
+      cursor:pointer;
+      opacity:0.95;
+      padding:6px 9px;
+      border-radius:10px;
+      border:1px solid rgba(255,219,140,0.25);
+      background: rgba(255,219,140,0.08);
+      color: #ffd36a;
+      font-weight: 1000;
+      user-select:none;
+      -webkit-user-select:none;
+    }
 
     #hub-main-tabs, #hub-sub-tabs{
       display:flex; gap:8px;
-      padding: 10px 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.10);
+      padding: 9px 12px;
+      border-bottom: 1px solid rgba(10,24,40,0.12);
       position: sticky;
-      background: rgba(15,15,15,0.98);
+      background: rgba(248,249,251,0.96);
       z-index: 4;
     }
     #hub-main-tabs{ top: 48px; }
-    #hub-sub-tabs{ top: 96px; }
+    #hub-sub-tabs{ top: 92px; }
 
     .hub-tab{
       cursor:pointer;
-      border: 1px solid rgba(255,255,255,0.14);
-      background: rgba(0,0,0,0.22);
-      color: #eee;
-      padding: 7px 10px;
+      border: 1px solid rgba(10,24,40,0.16);
+      background: rgba(255,255,255,0.7);
+      color: #0b1a2b;
+      padding: 6px 9px;
       border-radius: 10px;
       font-size: 12px;
-      font-weight: 900;
-      opacity: 0.9;
+      font-weight: 1000;
       white-space: nowrap;
+      user-select:none;
+      -webkit-user-select:none;
     }
     .hub-tab.active{
-      color: #ffd36a;
-      border-color: rgba(255,211,106,0.35);
-      background: rgba(255,211,106,0.08);
-      opacity: 1;
+      color: #0b1a2b;
+      border-color: rgba(255,211,106,0.55);
+      background: linear-gradient(180deg, rgba(255,226,140,0.40), rgba(255,211,106,0.14));
+      box-shadow: inset 0 0 0 1px rgba(255,211,106,0.18);
     }
 
-    #hub-body{ padding: 10px 12px; margin-top: 0; }
+    #hub-body{ padding: 10px 12px; }
+
     .hub-card{
-      border: 1px solid rgba(255,255,255,0.12);
+      border: 1px solid rgba(10,24,40,0.14);
       border-radius: 12px;
       padding: 10px;
       margin-bottom: 10px;
-      background: rgba(255,255,255,0.04);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.78), rgba(245,246,248,0.78));
+      box-shadow: 0 10px 22px rgba(0,0,0,0.10);
     }
-    .hub-muted{ opacity:0.75; font-size: 12px; }
-    .hub-big{ font-weight: 900; margin: 6px 0; }
+    .hub-muted{ opacity:0.72; font-size: 12px; }
+    .hub-big{ font-weight: 1100; margin: 6px 0; font-size: 13px; }
+
     .hub-btns{ display:flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
     .hub-btn{
       cursor:pointer;
-      border: 1px solid rgba(255,255,255,0.14);
-      background: rgba(0,0,0,0.22);
-      color: #eee;
-      padding: 7px 9px;
+      border: 1px solid rgba(10,24,40,0.16);
+      background: rgba(255,255,255,0.72);
+      color: #0b1a2b;
+      padding: 6px 9px;
       border-radius: 10px;
       font-size: 12px;
-      font-weight: 900;
+      font-weight: 1000;
+      user-select:none;
+      -webkit-user-select:none;
     }
     .hub-btn.good{
-      color:#ffd36a;
-      border-color: rgba(255,211,106,0.35);
-      background: rgba(255,211,106,0.08);
+      border-color: rgba(255,211,106,0.55);
+      background: linear-gradient(180deg, rgba(255,226,140,0.40), rgba(255,211,106,0.14));
     }
     .hub-btn.bad{
-      color:#ff8a8a;
-      border-color: rgba(255,138,138,0.35);
-      background: rgba(255,138,138,0.08);
+      border-color: rgba(208,70,70,0.35);
+      background: linear-gradient(180deg, rgba(255,210,210,0.55), rgba(255,235,235,0.55));
+      color: #7b0f0f;
     }
+
     .hub-toast{
       position: fixed;
       z-index: 1000000;
       left: 50%;
       transform: translateX(-50%);
       bottom: 18px;
-      background: rgba(15,15,15,0.96);
+      background: linear-gradient(180deg, rgba(11,26,43,0.98), rgba(8,18,31,0.98));
       color: #ffd36a;
-      border: 1px solid rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,219,140,0.25);
       border-radius: 12px;
       padding: 10px 12px;
-      box-shadow: 0 14px 40px rgba(0,0,0,0.5);
+      box-shadow: 0 14px 40px rgba(0,0,0,0.50);
       max-width: 92vw;
-      font-weight: 900;
+      font-weight: 1000;
     }
+
+    /* Compact scroll */
+    #hub-panel::-webkit-scrollbar { width: 10px; }
+    #hub-panel::-webkit-scrollbar-thumb { background: rgba(10,24,40,0.20); border-radius: 10px; }
   `);
 
   const badge = document.createElement("div");
   badge.id = "hub-badge";
-  badge.textContent = "🏢";
+  badge.textContent = "🏦"; // business banker feel
   document.body.appendChild(badge);
 
   const panel = document.createElement("div");
@@ -194,7 +253,7 @@
   panel.style.display = "none";
   panel.innerHTML = `
     <header>
-      <div id="hub-title">Hub</div>
+      <div id="hub-title"><span class="crest"></span><span id="hub-title-text">Hub</span></div>
       <div id="hub-close">✕</div>
     </header>
 
@@ -222,46 +281,94 @@
     setTimeout(() => t.remove(), 4200);
   }
 
+  function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+
   function loadPos() {
     const p = gmGetJSON(STORAGE_POS, { x: 14, y: 160 });
     return { x: Math.max(6, p.x), y: Math.max(6, p.y) };
   }
   function savePos(x, y) { gmSetJSON(STORAGE_POS, { x, y }); }
-  function applyPos() {
-    const p = loadPos();
-    badge.style.left = p.x + "px";
-    badge.style.top = p.y + "px";
-    panel.style.left = (p.x + 54) + "px";
-    panel.style.top = p.y + "px";
-  }
-  applyPos();
 
-  let drag = null;
-  badge.addEventListener("pointerdown", (e) => {
-    drag = { startX: e.clientX, startY: e.clientY, pos: loadPos() };
-    badge.setPointerCapture(e.pointerId);
-  });
-  badge.addEventListener("pointermove", (e) => {
-    if (!drag) return;
-    const x = Math.round(drag.pos.x + (e.clientX - drag.startX));
-    const y = Math.round(drag.pos.y + (e.clientY - drag.startY));
+  function applyPos(xy) {
+    const p = xy || loadPos();
+
+    // keep badge in viewport a bit
+    const maxX = Math.max(6, window.innerWidth - BADGE_SIZE - 6);
+    const maxY = Math.max(6, window.innerHeight - BADGE_SIZE - 6);
+
+    const x = clamp(p.x, 6, maxX);
+    const y = clamp(p.y, 6, maxY);
+
     badge.style.left = x + "px";
     badge.style.top = y + "px";
-    panel.style.left = (x + 54) + "px";
-    panel.style.top = y + "px";
-  });
-  badge.addEventListener("pointerup", () => {
-    if (!drag) return;
-    savePos(parseInt(badge.style.left, 10) || 14, parseInt(badge.style.top, 10) || 160);
-    drag = null;
+
+    // panel placement: try to the right; if no room, place left
+    const panelW = 332;
+    const rightX = x + BADGE_SIZE + PANEL_GAP;
+    const leftX  = x - panelW - PANEL_GAP;
+
+    const px = (rightX + panelW <= window.innerWidth - 6) ? rightX : Math.max(6, leftX);
+    const py = clamp(y, 6, Math.max(6, window.innerHeight - 120));
+
+    panel.style.left = px + "px";
+    panel.style.top  = py + "px";
+  }
+
+  // initial
+  applyPos();
+
+  // Re-apply on resize/orientation
+  window.addEventListener("resize", () => applyPos(loadPos()));
+
+  // ======= Briefcase-style drag: no accidental opens =======
+  let drag = null;
+  let didDrag = false;
+
+  badge.addEventListener("pointerdown", (e) => {
+    drag = { startX: e.clientX, startY: e.clientY, pos: loadPos(), pid: e.pointerId };
+    didDrag = false;
+    badge.setPointerCapture(e.pointerId);
   });
 
-  let lastDown = 0;
-  badge.addEventListener("pointerdown", () => (lastDown = Date.now()));
-  badge.addEventListener("click", () => {
-    if (Date.now() - lastDown > 250) return;
+  badge.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+
+    if (!didDrag && (Math.abs(dx) > DRAG_THRESHOLD_PX || Math.abs(dy) > DRAG_THRESHOLD_PX)) {
+      didDrag = true;
+    }
+
+    const x = Math.round(drag.pos.x + dx);
+    const y = Math.round(drag.pos.y + dy);
+
+    applyPos({ x, y });
+  });
+
+  function endDrag() {
+    if (!drag) return;
+    // save latest badge pos
+    const x = parseInt(badge.style.left, 10) || 14;
+    const y = parseInt(badge.style.top, 10) || 160;
+    savePos(x, y);
+    drag = null;
+  }
+
+  badge.addEventListener("pointerup", (e) => {
+    endDrag();
+    // If it was a drag, do NOT toggle panel
+    if (didDrag) return;
+    // Tap/click toggles panel
     panel.style.display = (panel.style.display === "none") ? "block" : "none";
     if (panel.style.display !== "none") render();
+  });
+
+  badge.addEventListener("pointercancel", endDrag);
+
+  // Also allow tapping the header crest/title area to quickly close/open (banker app feel)
+  panel.querySelector("#hub-title").addEventListener("click", () => {
+    panel.style.display = "none";
   });
 
   function fmtDate(iso) {
@@ -290,8 +397,9 @@
       subBar.style.display = "none";
     }
 
-    badge.textContent = (main === "company") ? "🏢" : "⚔️";
-    panel.querySelector("#hub-title").textContent = (main === "company") ? "Company Hub" : "War Hub";
+    // Badge icon swaps but stays banker vibe
+    badge.textContent = (main === "company") ? "🏦" : "⚔️";
+    panel.querySelector("#hub-title-text").textContent = (main === "company") ? "Company Hub" : "War Hub";
   }
   updateTabsUI();
 
@@ -306,7 +414,8 @@
     const records = data.renewals_records || [];
     const list = (sub === "records") ? records : open;
 
-    const replyText = `Renewed for another ${renewDays} days thank you for using my service's other to come check out my profile signature for updates of hubs.`;
+    const replyText =
+      `Renewed for another ${renewDays} days thank you for using my service's other to come check out my profile signature for updates of hubs.`;
 
     if (!list.length) {
       body.innerHTML = `<div class="hub-muted">${sub === "records" ? "No records yet." : "No new renewals right now."}</div>`;
@@ -315,18 +424,20 @@
 
     body.innerHTML = list.map(r => {
       const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
-      const doneBadge = r.done ? `<div class="hub-muted">Status: ✅ Done</div>` : `<div class="hub-muted">Status: ⏳ Open</div>`;
+      const doneBadge = r.done
+        ? `<div class="hub-muted">Status: ✅ Done</div>`
+        : `<div class="hub-muted">Status: ⏳ Open</div>`;
       const doneBtn = (!r.done && sub === "renewals") ? `<button class="hub-btn good hub-done">Renewed ✅</button>` : "";
       const deleteBtn = (sub === "records") ? `<button class="hub-btn bad hub-del">Delete</button>` : "";
       const doneLine = r.done ? `<div class="hub-muted">Marked done: ${fmtDate(r.done_at || "")}</div>` : "";
 
       return `
         <div class="hub-card" data-eid="${r.event_id}">
-          <div class="hub-big">Company hub renewal payment — another ${renewDays} days</div>
-          <div class="hub-muted">Date: ${fmtDate(r.received_at)}</div>
-          <div class="hub-muted">Received by: ${who}</div>
-          <div class="hub-muted">Amount: ${r.qty} Xanax</div>
-          <div class="hub-muted">Renewed until: ${fmtDate(r.renewed_until)}</div>
+          <div class="hub-big">🏦 Renewal posted — +${renewDays} days</div>
+          <div class="hub-muted">Received: ${fmtDate(r.received_at)}</div>
+          <div class="hub-muted">Client: ${who}</div>
+          <div class="hub-muted">Deposit: ${r.qty} Xanax</div>
+          <div class="hub-muted">Valid until: ${fmtDate(r.renewed_until)}</div>
           ${doneBadge}
           ${doneLine}
           <div class="hub-btns">
@@ -342,6 +453,7 @@
     body.querySelectorAll(".hub-card").forEach(card => {
       const eid = card.dataset.eid;
       const r = list.find(x => x.event_id === eid);
+      if (!r) return;
 
       card.querySelector(".hub-copy").addEventListener("click", async () => {
         const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
@@ -373,9 +485,6 @@
       const delBtn = card.querySelector(".hub-del");
       if (delBtn) {
         delBtn.addEventListener("click", () => {
-          // no confirmation popups to keep it clean; uncomment if you want confirm:
-          // if (!confirm("Delete this record permanently?")) return;
-
           apiPost("/api/renewals/delete", { event_id: eid }, (err, resp) => {
             if (err || !resp || !resp.ok) return showToast("Could not delete record.");
             showToast("Deleted ✅");
@@ -390,7 +499,7 @@
     const body = panel.querySelector("#hub-body");
     body.innerHTML = `
       <div class="hub-card">
-        <div class="hub-big">War Hub</div>
+        <div class="hub-big">⚔️ War Hub</div>
         <div class="hub-muted">Coming soon — paste your War Hub overlay content here.</div>
       </div>
     `;
@@ -420,7 +529,7 @@
 
     if (newest) {
       const who = `${newest.sender_name || "Unknown"}${newest.sender_id ? " [" + newest.sender_id + "]" : ""}`;
-      showToast(`Renewal received: 100 Xanax from ${who}`);
+      showToast(`🏦 Renewal received: 100 Xanax from ${who}`);
       seen.add(newest.event_id);
       gmSetJSON(STORAGE_SEEN, Array.from(seen).slice(-500));
     }
@@ -431,7 +540,6 @@
       if (err || !data) return;
       lastState = data;
 
-      // only toast on open renewals
       checkForNewToast(data.renewals_open || []);
 
       if (forceRender || panel.style.display !== "none") render();
