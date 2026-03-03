@@ -6,8 +6,11 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory
 from dotenv import load_dotenv
 
-from db import init_db, add_renewal_if_new, get_open_renewals, get_all_renewals, mark_done
-from torn_api import fetch_new_events, extract_xanax_payment
+from db import (
+    init_db, add_renewal_if_new, get_open_renewals, get_all_renewals,
+    mark_done, get_setting, set_setting
+)
+from torn_api import fetch_events, extract_xanax_payment
 
 load_dotenv()
 app = Flask(__name__)
@@ -21,9 +24,12 @@ _booted = False
 _last_poll_error = None
 _last_poll_at = None
 
+SET_LAST_TS = "last_seen_event_ts"
+
 
 def poll_loop():
     global _last_poll_error, _last_poll_at
+
     while True:
         try:
             if not TORN_API_KEY:
@@ -31,28 +37,46 @@ def poll_loop():
                 time.sleep(10)
                 continue
 
-            data = fetch_new_events(TORN_API_KEY)
+            data = fetch_events(TORN_API_KEY, limit=100)
             _last_poll_at = datetime.now(timezone.utc).isoformat()
             _last_poll_error = None
 
             events = (data or {}).get("events") or {}
-            for eid, ev in events.items():
-                ev_text = (ev or {}).get("event") or ""
-                ev_ts = (ev or {}).get("timestamp")
 
+            # last seen timestamp (unix seconds)
+            last_ts = int(get_setting(SET_LAST_TS, "0") or "0")
+
+            # Process in chronological order so last_ts advances safely
+            items = []
+            for eid, ev in events.items():
+                try:
+                    ts = int((ev or {}).get("timestamp") or 0)
+                except Exception:
+                    ts = 0
+                items.append((ts, str(eid), ev or {}))
+            items.sort(key=lambda x: x[0])  # oldest -> newest
+
+            max_ts = last_ts
+
+            for ts, eid, ev in items:
+                if ts <= last_ts:
+                    continue
+
+                ev_text = (ev.get("event") or "")
                 match = extract_xanax_payment(ev_text, qty_required=100)
                 if not match:
+                    max_ts = max(max_ts, ts)
                     continue
 
                 sender_id = match.get("sender_id")
                 sender_name = match.get("sender_name") or "Unknown"
                 qty = match.get("qty") or 100
 
-                received_at = datetime.fromtimestamp(int(ev_ts), tz=timezone.utc) if ev_ts else datetime.now(timezone.utc)
+                received_at = datetime.fromtimestamp(ts, tz=timezone.utc)
                 renewed_until = received_at + timedelta(days=RENEW_DAYS)
 
                 add_renewal_if_new(
-                    event_id=str(eid),
+                    event_id=eid,
                     sender_id=str(sender_id) if sender_id else None,
                     sender_name=str(sender_name),
                     qty=int(qty),
@@ -60,6 +84,11 @@ def poll_loop():
                     renewed_until_iso=renewed_until.isoformat(),
                     raw_text=ev_text[:1000],
                 )
+
+                max_ts = max(max_ts, ts)
+
+            if max_ts > last_ts:
+                set_setting(SET_LAST_TS, str(max_ts))
 
         except Exception as e:
             _last_poll_error = f"{type(e).__name__}: {e}"
@@ -86,6 +115,7 @@ def health():
         last_error=_last_poll_error,
         poll_seconds=POLL_SECONDS,
         renew_days=RENEW_DAYS,
+        last_seen_event_ts=get_setting(SET_LAST_TS, "0"),
     )
 
 
@@ -107,7 +137,6 @@ def api_done():
     event_id = str(data.get("event_id") or "").strip()
     if not event_id:
         return jsonify(ok=False, error="Missing event_id"), 400
-
     ok = mark_done(event_id)
     return jsonify(ok=ok)
 
