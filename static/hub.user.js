@@ -1,27 +1,27 @@
 // ==UserScript==
-// @name         Company Hub Renewals 🔔 (Overlay Hub + Records)
+// @name         Company Hub Renewals 🏢 (Renewals + Records)
 // @namespace    company-hub-renewals
-// @version      1.1.0
-// @description  Overlay Hub that shows renewal payments when you receive 100 Xanax + Records tab + mark done.
+// @version      1.2.0
+// @description  Detect 100 Xanax payments -> Renewal alert, store Records, mark Renewed ✅, copy reply.
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @connect      YOUR-RENDER-APP.onrender.com
+// @connect      https://company-hub-renewals.onrender.com
 // ==/UserScript==
 
 (function () {
   "use strict";
 
   // ================== USER SETUP (EASY SPOT) ==================
-  const BASE_URL = "https://company-hub-renewals.onrender.com";
+  const BASE_URL = "https://company-hub-renewals.onrender.com"; // <-- put your Render URL
   // ============================================================
 
-  const STORAGE_SEEN = "companyhub_seen_event_ids_v2";
-  const STORAGE_POS  = "companyhub_overlay_pos_v2";
-  const STORAGE_TAB  = "companyhub_active_tab_v1";
+  const STORAGE_SEEN = "companyhub_seen_event_ids_v3";
+  const STORAGE_POS  = "companyhub_overlay_pos_v3";
+  const STORAGE_TAB  = "companyhub_active_tab_v2";
   const POLL_MS = 15000;
 
   function gmGetJSON(key, fallback) {
@@ -56,7 +56,7 @@
           cb(e);
         }
       },
-      onerror: (e) => cb(e || new Error("request failed")),
+      onerror: () => cb(new Error("Request failed")),
     });
   }
 
@@ -73,7 +73,7 @@
           cb(e);
         }
       },
-      onerror: (e) => cb(e || new Error("request failed")),
+      onerror: () => cb(new Error("Request failed")),
     });
   }
 
@@ -111,7 +111,7 @@
       position: sticky; top: 0;
       background: rgba(15,15,15,0.98);
     }
-    #chub-title{ font-weight:800; letter-spacing:0.3px; }
+    #chub-title{ font-weight:900; letter-spacing:0.3px; }
     #chub-close{ cursor:pointer; opacity:0.9; padding:6px 9px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); }
 
     #chub-tabs{
@@ -130,7 +130,7 @@
       padding: 7px 10px;
       border-radius: 10px;
       font-size: 12px;
-      font-weight: 800;
+      font-weight: 900;
       opacity: 0.9;
     }
     .chub-tab.active{
@@ -150,7 +150,7 @@
     }
     .chub-row{ display:flex; justify-content:space-between; gap: 10px; }
     .chub-muted{ opacity:0.75; font-size: 12px; }
-    .chub-big{ font-weight: 800; margin: 6px 0; }
+    .chub-big{ font-weight: 900; margin: 6px 0; }
     .chub-btns{ display:flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
     .chub-btn{
       cursor:pointer;
@@ -160,7 +160,7 @@
       padding: 7px 9px;
       border-radius: 10px;
       font-size: 12px;
-      font-weight: 800;
+      font-weight: 900;
     }
     .chub-btn.good{
       color:#ffd36a;
@@ -180,7 +180,7 @@
       padding: 10px 12px;
       box-shadow: 0 14px 40px rgba(0,0,0,0.5);
       max-width: 92vw;
-      font-weight: 800;
+      font-weight: 900;
     }
   `);
 
@@ -197,20 +197,15 @@
       <div id="chub-title">Company Hub</div>
       <div id="chub-close">✕</div>
     </header>
-
     <div id="chub-tabs">
       <div class="chub-tab" data-tab="renewals">Renewals</div>
       <div class="chub-tab" data-tab="records">Records</div>
     </div>
-
-    <div id="chub-body">
-      <div class="chub-muted">Loading…</div>
-    </div>
+    <div id="chub-body"><div class="chub-muted">Loading…</div></div>
   `;
   document.body.appendChild(panel);
 
-  const closeBtn = panel.querySelector("#chub-close");
-  closeBtn.addEventListener("click", () => (panel.style.display = "none"));
+  panel.querySelector("#chub-close").addEventListener("click", () => (panel.style.display = "none"));
 
   function showToast(msg) {
     const t = document.createElement("div");
@@ -241,10 +236,8 @@
   });
   badge.addEventListener("pointermove", (e) => {
     if (!drag) return;
-    const dx = e.clientX - drag.startX;
-    const dy = e.clientY - drag.startY;
-    const x = Math.round(drag.pos.x + dx);
-    const y = Math.round(drag.pos.y + dy);
+    const x = Math.round(drag.pos.x + (e.clientX - drag.startX));
+    const y = Math.round(drag.pos.y + (e.clientY - drag.startY));
     badge.style.left = x + "px";
     badge.style.top = y + "px";
     panel.style.left = (x + 54) + "px";
@@ -252,9 +245,7 @@
   });
   badge.addEventListener("pointerup", () => {
     if (!drag) return;
-    const x = parseInt(badge.style.left, 10) || 14;
-    const y = parseInt(badge.style.top, 10) || 160;
-    savePos(x, y);
+    savePos(parseInt(badge.style.left, 10) || 14, parseInt(badge.style.top, 10) || 160);
     drag = null;
   });
 
@@ -263,30 +254,20 @@
   badge.addEventListener("click", () => {
     if (Date.now() - lastDown > 250) return;
     panel.style.display = (panel.style.display === "none") ? "block" : "none";
+    if (panel.style.display !== "none") render();
   });
 
   function fmtDate(iso) {
-    try { return new Date(iso).toLocaleString(); }
-    catch { return iso || ""; }
+    try { return new Date(iso).toLocaleString(); } catch { return iso || ""; }
   }
 
-  // Tabs
-  function getActiveTab() {
-    return gmGetStr(STORAGE_TAB, "renewals");
-  }
-  function setActiveTab(tab) {
-    gmSetStr(STORAGE_TAB, tab);
-    updateTabsUI();
-  }
+  function getActiveTab() { return gmGetStr(STORAGE_TAB, "renewals"); }
+  function setActiveTab(tab) { gmSetStr(STORAGE_TAB, tab); updateTabsUI(); render(); }
   function updateTabsUI() {
     const active = getActiveTab();
-    panel.querySelectorAll(".chub-tab").forEach(el => {
-      el.classList.toggle("active", el.getAttribute("data-tab") === active);
-    });
+    panel.querySelectorAll(".chub-tab").forEach(el => el.classList.toggle("active", el.dataset.tab === active));
   }
-  panel.querySelectorAll(".chub-tab").forEach(el => {
-    el.addEventListener("click", () => setActiveTab(el.getAttribute("data-tab")));
-  });
+  panel.querySelectorAll(".chub-tab").forEach(el => el.addEventListener("click", () => setActiveTab(el.dataset.tab)));
   updateTabsUI();
 
   let lastState = null;
@@ -302,43 +283,32 @@
     const tab = getActiveTab();
     const renewDays = data.renew_days || 45;
 
-    const open = (data.renewals_open || []);
-    const records = (data.renewals_records || []);
-
-    const replyText = `Renewed for another ${renewDays} days — thank you for using my service. More to come — check out my profile signature for hub updates.`;
-
+    const open = data.renewals_open || [];
+    const records = data.renewals_records || [];
     const list = (tab === "records") ? records : open;
+
+    const replyText = `Renewed for another ${renewDays} days thank you for using my service's other to come check out my profile signature for updates of hubs.`;
 
     if (!list.length) {
       body.innerHTML = `<div class="chub-muted">${tab === "records" ? "No records yet." : "No new renewals right now."}</div>`;
       return;
     }
 
-    body.innerHTML = list.map((r) => {
+    body.innerHTML = list.map(r => {
       const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
       const doneLine = r.done ? `<div class="chub-muted">Marked done: ${fmtDate(r.done_at || "")}</div>` : "";
       const doneBadge = r.done ? `<div class="chub-muted">Status: ✅ Done</div>` : `<div class="chub-muted">Status: ⏳ Open</div>`;
-
-      const doneBtn = (!r.done && tab !== "records")
-        ? `<button class="chub-btn good chub-done">Renewed ✅</button>`
-        : "";
+      const doneBtn = (!r.done && tab !== "records") ? `<button class="chub-btn good chub-done">Renewed ✅</button>` : "";
 
       return `
         <div class="chub-card" data-eid="${r.event_id}">
-          <div class="chub-row">
-            <div class="chub-muted">Event</div>
-            <div class="chub-muted">#${r.event_id}</div>
-          </div>
-
           <div class="chub-big">Company hub renewal payment — another ${renewDays} days</div>
-
-          <div class="chub-muted">Received: ${fmtDate(r.received_at)}</div>
+          <div class="chub-muted">Date: ${fmtDate(r.received_at)}</div>
           <div class="chub-muted">Received by: ${who}</div>
           <div class="chub-muted">Amount: ${r.qty} Xanax</div>
           <div class="chub-muted">Renewed until: ${fmtDate(r.renewed_until)}</div>
           ${doneBadge}
           ${doneLine}
-
           <div class="chub-btns">
             <button class="chub-btn chub-copy">Copy reply</button>
             <button class="chub-btn chub-open">Open profile</button>
@@ -348,8 +318,8 @@
       `;
     }).join("");
 
-    body.querySelectorAll(".chub-card").forEach((card) => {
-      const eid = card.getAttribute("data-eid");
+    body.querySelectorAll(".chub-card").forEach(card => {
+      const eid = card.dataset.eid;
       const r = list.find(x => x.event_id === eid);
 
       card.querySelector(".chub-copy").addEventListener("click", async () => {
@@ -357,28 +327,22 @@
         const txt = `Hi ${who},\n\n${replyText}\n\n—`;
         try {
           await navigator.clipboard.writeText(txt);
-          showToast("Reply copied ✅ Paste it into Torn mail.");
+          showToast("Reply copied ✅");
         } catch {
-          showToast("Clipboard blocked on this device. Copy manually.");
+          showToast("Clipboard blocked — copy manually.");
         }
       });
 
       card.querySelector(".chub-open").addEventListener("click", () => {
-        if (r.sender_id) {
-          window.open(`https://www.torn.com/profiles.php?XID=${r.sender_id}`, "_blank");
-        } else {
-          showToast("No sender ID found in event text.");
-        }
+        if (!r.sender_id) return showToast("No sender ID found.");
+        window.open(`https://www.torn.com/profiles.php?XID=${r.sender_id}`, "_blank");
       });
 
       const doneBtn = card.querySelector(".chub-done");
       if (doneBtn) {
         doneBtn.addEventListener("click", () => {
           apiPost("/api/renewals/done", { event_id: eid }, (err, resp) => {
-            if (err || !resp || !resp.ok) {
-              showToast("Could not mark done (server error).");
-              return;
-            }
+            if (err || !resp || !resp.ok) return showToast("Could not mark done.");
             showToast("Marked done ✅ Moved to Records.");
             poll(true);
           });
@@ -389,38 +353,30 @@
 
   function checkForNewToast(openRenewals) {
     const seen = new Set(gmGetJSON(STORAGE_SEEN, []));
-    let newestUnseen = null;
+    let newest = null;
 
     for (const r of openRenewals) {
-      if (!seen.has(r.event_id)) {
-        newestUnseen = r;
-        break;
-      }
+      if (!seen.has(r.event_id)) { newest = r; break; }
     }
 
-    if (newestUnseen) {
-      const who = `${newestUnseen.sender_name || "Unknown"}${newestUnseen.sender_id ? " [" + newestUnseen.sender_id + "]" : ""}`;
+    if (newest) {
+      const who = `${newest.sender_name || "Unknown"}${newest.sender_id ? " [" + newest.sender_id + "]" : ""}`;
       showToast(`Renewal received: 100 Xanax from ${who}`);
-      seen.add(newestUnseen.event_id);
-      gmSetJSON(STORAGE_SEEN, Array.from(seen).slice(-400));
+      seen.add(newest.event_id);
+      gmSetJSON(STORAGE_SEEN, Array.from(seen).slice(-500));
     }
   }
 
   function poll(forceRender) {
     apiGet("/state", (err, data) => {
       if (err || !data) return;
-
       lastState = data;
-
-      const open = data.renewals_open || [];
-      checkForNewToast(open);
-
-      if (forceRender || panel.style.display !== "none") {
-        render();
-      }
+      checkForNewToast(data.renewals_open || []);
+      if (forceRender || panel.style.display !== "none") render();
     });
   }
 
+  // Initial + loop
   poll(true);
   setInterval(() => poll(false), POLL_MS);
 })();
