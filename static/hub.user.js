@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Hub Overlay 🏦⚔️ (Company Hub + War Hub) [Banker Theme + Briefcase Drag + Reply w/ Days Left]
+// @name         Hub Overlay 🏦⚔️ (Company Hub + War Hub) [Banker Theme + Briefcase Drag + 5-Day Warning]
 // @namespace    hub-overlay
-// @version      2.2.0
-// @description  Company Hub: 100 Xanax renewals + records + delete. War Hub placeholder tab. Banker theme + briefcase drag. Copy reply pulls server-calculated X days left per sender_id.
+// @version      2.3.0
+// @description  Company Hub: 100 Xanax renewals + records + delete. Adds 5-day-left warning alerts (toast + list) and a "Copy 5-day message" + "Message" buttons.
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_addStyle
@@ -20,12 +20,12 @@
   // ============================================================
 
   const STORAGE_SEEN = "hub_seen_event_ids_v1";
+  const STORAGE_SEEN_ALERTS = "hub_seen_alert_ids_v1";
   const STORAGE_POS  = "hub_overlay_pos_v2";
   const STORAGE_MAIN = "hub_active_main_tab_v1";  // company | war
   const STORAGE_SUB  = "hub_active_company_subtab_v1"; // renewals | records
   const POLL_MS = 15000;
 
-  // Briefcase-like drag tuning
   const DRAG_THRESHOLD_PX = 6;
   const PANEL_GAP = 10;
   const BADGE_SIZE = 40;
@@ -73,9 +73,14 @@
     });
   }
 
-  // NEW: get reply payload (server computes X days left)
   function apiGetReplyPayload(senderId, cb) {
     apiGet(`/api/reply_payload?sender_id=${encodeURIComponent(String(senderId))}`, cb);
+  }
+  function apiGetWarnPayload(senderId, cb) {
+    apiGet(`/api/warn_payload?sender_id=${encodeURIComponent(String(senderId))}`, cb);
+  }
+  function apiAckAlert(alertId, cb) {
+    apiPost("/api/alerts/ack", { alert_id: String(alertId) }, cb);
   }
 
   GM_addStyle(`
@@ -104,13 +109,11 @@
       max-height: 68vh;
       overflow: auto;
       border-radius: 14px;
-
       background:
         linear-gradient(180deg, rgba(255,255,255,0.92), rgba(246,247,249,0.92)),
         repeating-linear-gradient(90deg, rgba(10,24,40,0.04) 0, rgba(10,24,40,0.04) 2px, rgba(0,0,0,0) 2px, rgba(0,0,0,0) 10px);
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
-
       border: 1px solid rgba(10,24,40,0.18);
       box-shadow: 0 18px 55px rgba(0,0,0,0.45);
       color: #0d1622;
@@ -402,6 +405,81 @@
     }
   }
 
+  function renderAlerts(data) {
+    const alerts = (data.alerts_open || []);
+    if (!alerts.length) return "";
+
+    return `
+      <div class="hub-card">
+        <div class="hub-big">⚠️ Warnings</div>
+        <div class="hub-muted">Players nearing expiry (click Ack after you’ve handled it).</div>
+        ${alerts.map(a => {
+          const sid = a.sender_id || "";
+          const left = (a.remaining_days ?? "?");
+          return `
+            <div class="hub-card" style="margin-top:10px;" data-alertid="${a.alert_id}" data-sender="${sid}">
+              <div class="hub-big">⚠️ ${left} day(s) left — Hub access</div>
+              <div class="hub-muted">Sender: ${sid}</div>
+              <div class="hub-muted">Valid until: ${fmtDate(a.renewed_until)}</div>
+              <div class="hub-btns">
+                <button class="hub-btn good hub-warn-copy">Copy “5 days left”</button>
+                <button class="hub-btn good hub-warn-msg">Message</button>
+                <button class="hub-btn bad hub-ack">Ack</button>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function wireAlertButtons(container) {
+    container.querySelectorAll("[data-alertid]").forEach(card => {
+      const alertId = card.getAttribute("data-alertid");
+      const senderId = card.getAttribute("data-sender");
+
+      const copyBtn = card.querySelector(".hub-warn-copy");
+      const msgBtn  = card.querySelector(".hub-warn-msg");
+      const ackBtn  = card.querySelector(".hub-ack");
+
+      if (copyBtn) {
+        copyBtn.addEventListener("click", () => {
+          if (!senderId) return showToast("No sender ID.");
+          showToast("Fetching warning…");
+          apiGetWarnPayload(senderId, async (err, payload) => {
+            if (err || !payload || !payload.ok) return showToast("Could not get warning payload.");
+            const txt = payload.message_body;
+            const ok = await copyToClipboard(txt);
+            showToast(ok ? "Warning copied ✅" : "Clipboard blocked — copy manually.");
+          });
+        });
+      }
+
+      if (msgBtn) {
+        msgBtn.addEventListener("click", () => {
+          if (!senderId) return showToast("No sender ID.");
+          showToast("Preparing message…");
+          apiGetWarnPayload(senderId, async (err, payload) => {
+            if (err || !payload || !payload.ok) return showToast("Could not get warning payload.");
+            await copyToClipboard(payload.message_body);
+            if (payload.compose_url) window.open(payload.compose_url, "_blank");
+            showToast("Message ready ✅");
+          });
+        });
+      }
+
+      if (ackBtn) {
+        ackBtn.addEventListener("click", () => {
+          apiAckAlert(alertId, (err, resp) => {
+            if (err || !resp || !resp.ok) return showToast("Could not ack alert.");
+            showToast("Acked ✅");
+            poll(true);
+          });
+        });
+      }
+    });
+  }
+
   function renderCompany(data) {
     const body = panel.querySelector("#hub-body");
     const sub = getSub();
@@ -411,12 +489,15 @@
     const records = data.renewals_records || [];
     const list = (sub === "records") ? records : open;
 
-    if (!list.length) {
+    // alerts section on top (only in Company Hub)
+    const alertsHTML = renderAlerts(data);
+
+    if (!list.length && !alertsHTML) {
       body.innerHTML = `<div class="hub-muted">${sub === "records" ? "No records yet." : "No new renewals right now."}</div>`;
       return;
     }
 
-    body.innerHTML = list.map(r => {
+    const listHTML = list.map(r => {
       const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
       const doneBadge = r.done
         ? `<div class="hub-muted">Status: ✅ Done</div>`
@@ -424,8 +505,6 @@
       const doneBtn = (!r.done && sub === "renewals") ? `<button class="hub-btn good hub-done">Renewed ✅</button>` : "";
       const deleteBtn = (sub === "records") ? `<button class="hub-btn bad hub-del">Delete</button>` : "";
       const doneLine = r.done ? `<div class="hub-muted">Marked done: ${fmtDate(r.done_at || "")}</div>` : "";
-
-      // NEW: "Message" button (opens compose URL with the exact payload available)
       const msgBtn = r.sender_id ? `<button class="hub-btn good hub-msg">Message</button>` : "";
 
       return `
@@ -448,39 +527,38 @@
       `;
     }).join("");
 
-    body.querySelectorAll(".hub-card").forEach(card => {
+    body.innerHTML = `${alertsHTML}${listHTML}`;
+
+    // wire alert buttons (if any)
+    wireAlertButtons(body);
+
+    // wire renewals buttons
+    body.querySelectorAll(".hub-card[data-eid]").forEach(card => {
       const eid = card.dataset.eid;
       const r = list.find(x => x.event_id === eid);
       if (!r) return;
 
-      // ✅ Copy reply now pulls /api/reply_payload so X days left is accurate
       card.querySelector(".hub-copy").addEventListener("click", () => {
         if (!r.sender_id) return showToast("No sender ID found.");
-
         showToast("Fetching reply…");
         apiGetReplyPayload(r.sender_id, async (err, payload) => {
           if (err || !payload || !payload.ok) return showToast("Could not get reply payload.");
-
           const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
           const txt = `Hi ${who},\n\n${payload.message_body}\n—`;
-
           const ok = await copyToClipboard(txt);
-          if (ok) showToast(`Reply copied ✅ (${payload.remaining_days ?? "?"} day(s) left)`);
-          else showToast("Clipboard blocked — copy manually.");
+          showToast(ok ? `Reply copied ✅ (${payload.remaining_days ?? "?"} day(s) left)` : "Clipboard blocked — copy manually.");
         });
       });
 
-      // ✅ Message button opens compose + also copies message body
       const msgBtn = card.querySelector(".hub-msg");
       if (msgBtn) {
         msgBtn.addEventListener("click", () => {
           showToast("Preparing message…");
           apiGetReplyPayload(r.sender_id, async (err, payload) => {
             if (err || !payload || !payload.ok) return showToast("Could not get reply payload.");
-
             const who = `${r.sender_name || "Unknown"}${r.sender_id ? " [" + r.sender_id + "]" : ""}`;
             const txt = `Hi ${who},\n\n${payload.message_body}\n—`;
-            await copyToClipboard(txt); // best effort
+            await copyToClipboard(txt);
             if (payload.compose_url) window.open(payload.compose_url, "_blank");
             showToast(`Message ready ✅ (${payload.remaining_days ?? "?"} day(s) left)`);
           });
@@ -555,12 +633,35 @@
     }
   }
 
+  // ✅ new: toast on new alerts
+  function checkForAlertToasts(alertsOpen) {
+    const seen = new Set(gmGetJSON(STORAGE_SEEN_ALERTS, []));
+    let fired = 0;
+
+    for (const a of (alertsOpen || [])) {
+      const aid = String(a.alert_id);
+      if (seen.has(aid)) continue;
+      fired++;
+      const sid = a.sender_id || "Unknown";
+      const left = (a.remaining_days ?? "?");
+      showToast(`⚠️ ${left} day(s) left — Hub access for [${sid}]`);
+      seen.add(aid);
+      if (fired >= 3) break; // avoid spam toasts
+    }
+
+    if (fired > 0) {
+      gmSetJSON(STORAGE_SEEN_ALERTS, Array.from(seen).slice(-500));
+    }
+  }
+
   function poll(forceRender) {
     apiGet("/state", (err, data) => {
       if (err || !data) return;
       lastState = data;
 
       checkForNewToast(data.renewals_open || []);
+      checkForAlertToasts(data.alerts_open || []);
+
       if (forceRender || panel.style.display !== "none") render();
     });
   }
