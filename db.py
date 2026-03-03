@@ -1,6 +1,8 @@
+# db.py ✅ COMPLETE: adds subscriptions table + start/extend logic by sender_id
 import os
 import sqlite3
 from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.getenv("DB_PATH", "companyhub.db")
 
@@ -32,6 +34,15 @@ def init_db():
       raw_text TEXT,
       done INTEGER NOT NULL DEFAULT 0,
       done_at_iso TEXT
+    )
+    """)
+
+    # ✅ NEW: per-sender countdown
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      sender_id TEXT PRIMARY KEY,
+      renewed_until_iso TEXT NOT NULL,
+      updated_at_iso TEXT NOT NULL
     )
     """)
 
@@ -164,3 +175,62 @@ def get_all_renewals(limit: int = 300) -> List[Dict[str, Any]]:
     rows = cur.fetchall()
     con.close()
     return _rows_to_dicts(rows)
+
+
+# =======================
+# ✅ NEW: subscription helpers
+# =======================
+
+def get_subscription(sender_id: str) -> Optional[Dict[str, Any]]:
+    con = _con()
+    cur = con.cursor()
+    cur.execute(
+        "SELECT sender_id, renewed_until_iso, updated_at_iso FROM subscriptions WHERE sender_id=?",
+        (sender_id,),
+    )
+    row = cur.fetchone()
+    con.close()
+    if not row:
+        return None
+    return {"sender_id": row[0], "renewed_until": row[1], "updated_at": row[2]}
+
+
+def extend_subscription(sender_id: str, received_at_dt: datetime, days: int = 60) -> datetime:
+    """
+    Start or extend:
+      base = max(existing_until, received_at_dt)
+      renewed_until = base + days
+    """
+    if received_at_dt.tzinfo is None:
+        received_at_dt = received_at_dt.replace(tzinfo=timezone.utc)
+
+    existing = get_subscription(sender_id)
+    base_dt = received_at_dt
+
+    if existing and existing.get("renewed_until"):
+        try:
+            existing_until = datetime.fromisoformat(existing["renewed_until"].replace("Z", "+00:00"))
+            if existing_until.tzinfo is None:
+                existing_until = existing_until.replace(tzinfo=timezone.utc)
+            base_dt = max(existing_until, received_at_dt)
+        except Exception:
+            base_dt = received_at_dt
+
+    renewed_until = base_dt + timedelta(days=int(days))
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    con = _con()
+    cur = con.cursor()
+    cur.execute(
+        """
+        INSERT INTO subscriptions(sender_id, renewed_until_iso, updated_at_iso)
+        VALUES(?, ?, ?)
+        ON CONFLICT(sender_id) DO UPDATE SET
+          renewed_until_iso=excluded.renewed_until_iso,
+          updated_at_iso=excluded.updated_at_iso
+        """,
+        (sender_id, renewed_until.isoformat(), now_iso),
+    )
+    con.commit()
+    con.close()
+    return renewed_until
