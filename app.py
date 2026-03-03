@@ -3,22 +3,19 @@ import time
 import threading
 from datetime import datetime, timezone, timedelta
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 from dotenv import load_dotenv
 
-from db import init_db, add_renewal_if_new, get_recent_renewals
+from db import init_db, add_renewal_if_new, get_open_renewals, get_all_renewals, mark_done
 from torn_api import fetch_new_events, extract_xanax_payment
 
 load_dotenv()
 app = Flask(__name__)
 
-# ====== CONFIG (Render Environment Variables) ======
-TORN_API_KEY = (os.getenv("TORN_API_KEY") or "").strip()  # your key (kept secret in Render)
+TORN_API_KEY = (os.getenv("TORN_API_KEY") or "").strip()
 POLL_SECONDS = int(os.getenv("POLL_SECONDS") or "30")
 RENEW_DAYS = int(os.getenv("RENEW_DAYS") or "45")
 PORT = int(os.getenv("PORT") or "10000")
-
-# ===================================================
 
 _booted = False
 _last_poll_error = None
@@ -39,7 +36,6 @@ def poll_loop():
             _last_poll_error = None
 
             events = (data or {}).get("events") or {}
-            # events is typically a dict keyed by event id strings
             for eid, ev in events.items():
                 ev_text = (ev or {}).get("event") or ""
                 ev_ts = (ev or {}).get("timestamp")
@@ -95,14 +91,25 @@ def health():
 
 @app.get("/state")
 def state():
-    renewals = get_recent_renewals(limit=30)
     return jsonify(
         renew_days=RENEW_DAYS,
         last_poll_at=_last_poll_at,
         last_error=_last_poll_error,
-        renewals=renewals,
+        renewals_open=get_open_renewals(limit=50),
+        renewals_records=get_all_renewals(limit=300),
         server_time=datetime.now(timezone.utc).isoformat(),
     )
+
+
+@app.post("/api/renewals/done")
+def api_done():
+    data = request.get_json(force=True, silent=True) or {}
+    event_id = str(data.get("event_id") or "").strip()
+    if not event_id:
+        return jsonify(ok=False, error="Missing event_id"), 400
+
+    ok = mark_done(event_id)
+    return jsonify(ok=ok)
 
 
 @app.get("/static/<path:filename>")
@@ -112,7 +119,6 @@ def static_files(filename):
 
 @app.get("/")
 def index():
-    # tiny page so you can confirm it’s running
     return (
         "<h3>Company Hub Renewals is running ✅</h3>"
         "<p>Use <code>/health</code> and <code>/state</code>.</p>"
