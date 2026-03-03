@@ -3,7 +3,7 @@ import time
 import threading
 from datetime import datetime, timezone, timedelta
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response
 from dotenv import load_dotenv
 
 from db import (
@@ -43,10 +43,8 @@ def poll_loop():
 
             events = (data or {}).get("events") or {}
 
-            # last seen timestamp (unix seconds)
             last_ts = int(get_setting(SET_LAST_TS, "0") or "0")
 
-            # Process in chronological order so last_ts advances safely
             items = []
             for eid, ev in events.items():
                 try:
@@ -54,8 +52,8 @@ def poll_loop():
                 except Exception:
                     ts = 0
                 items.append((ts, str(eid), ev or {}))
-            items.sort(key=lambda x: x[0])  # oldest -> newest
 
+            items.sort(key=lambda x: x[0])  # oldest -> newest
             max_ts = last_ts
 
             for ts, eid, ev in items:
@@ -64,8 +62,12 @@ def poll_loop():
 
                 ev_text = (ev.get("event") or "")
                 match = extract_xanax_payment(ev_text, qty_required=100)
+
+                # advance checkpoint even if it's not a payment,
+                # so we don't re-scan the same history forever
+                max_ts = max(max_ts, ts)
+
                 if not match:
-                    max_ts = max(max_ts, ts)
                     continue
 
                 sender_id = match.get("sender_id")
@@ -85,8 +87,6 @@ def poll_loop():
                     raw_text=ev_text[:1000],
                 )
 
-                max_ts = max(max_ts, ts)
-
             if max_ts > last_ts:
                 set_setting(SET_LAST_TS, str(max_ts))
 
@@ -103,55 +103,70 @@ def _start_once():
         return
     _booted = True
     init_db()
-    t = threading.Thread(target=poll_loop, daemon=True)
-    t.start()
+    threading.Thread(target=poll_loop, daemon=True).start()
 
 
-@app.get("/health")
+def _json_ok(payload, code=200):
+    # consistent JSON response, avoids odd caching issues
+    resp = jsonify(payload)
+    resp.status_code = code
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+# ✅ HEALTH: supports /health, /health/, /healthz, /healthz/
+@app.route("/health", methods=["GET"])
+@app.route("/health/", methods=["GET"])
+@app.route("/healthz", methods=["GET"])
+@app.route("/healthz/", methods=["GET"])
 def health():
-    return jsonify(
-        ok=True,
-        last_poll_at=_last_poll_at,
-        last_error=_last_poll_error,
-        poll_seconds=POLL_SECONDS,
-        renew_days=RENEW_DAYS,
-        last_seen_event_ts=get_setting(SET_LAST_TS, "0"),
-    )
+    return _json_ok({
+        "ok": True,
+        "last_poll_at": _last_poll_at,
+        "last_error": _last_poll_error,
+        "poll_seconds": POLL_SECONDS,
+        "renew_days": RENEW_DAYS,
+        "last_seen_event_ts": get_setting(SET_LAST_TS, "0"),
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    })
 
 
-@app.get("/state")
+@app.route("/state", methods=["GET"])
+@app.route("/state/", methods=["GET"])
 def state():
-    return jsonify(
-        renew_days=RENEW_DAYS,
-        last_poll_at=_last_poll_at,
-        last_error=_last_poll_error,
-        renewals_open=get_open_renewals(limit=50),
-        renewals_records=get_all_renewals(limit=300),
-        server_time=datetime.now(timezone.utc).isoformat(),
-    )
+    return _json_ok({
+        "renew_days": RENEW_DAYS,
+        "last_poll_at": _last_poll_at,
+        "last_error": _last_poll_error,
+        "renewals_open": get_open_renewals(limit=50),
+        "renewals_records": get_all_renewals(limit=300),
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    })
 
 
-@app.post("/api/renewals/done")
+@app.route("/api/renewals/done", methods=["POST"])
 def api_done():
     data = request.get_json(force=True, silent=True) or {}
     event_id = str(data.get("event_id") or "").strip()
     if not event_id:
-        return jsonify(ok=False, error="Missing event_id"), 400
+        return _json_ok({"ok": False, "error": "Missing event_id"}, 400)
     ok = mark_done(event_id)
-    return jsonify(ok=ok)
+    return _json_ok({"ok": ok})
 
 
-@app.get("/static/<path:filename>")
+@app.route("/static/<path:filename>", methods=["GET"])
 def static_files(filename):
     return send_from_directory("static", filename)
 
 
-@app.get("/")
+@app.route("/", methods=["GET"])
 def index():
-    return (
+    return Response(
         "<h3>Company Hub Renewals is running ✅</h3>"
-        "<p>Use <code>/health</code> and <code>/state</code>.</p>"
-        "<p>Your userscript is at <code>/static/hub.user.js</code>.</p>"
+        "<p>Try <code>/health</code> and <code>/state</code>.</p>"
+        "<p>Userscript: <code>/static/hub.user.js</code></p>",
+        mimetype="text/html",
+        headers={"Cache-Control": "no-store"},
     )
 
 
