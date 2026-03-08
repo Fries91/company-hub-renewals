@@ -1,4 +1,4 @@
-# db.py ✅ COMPLETE: renewals + subscriptions + alerts (5-days-left warning)
+# db.py ✅ COMPLETE: renewals + subscriptions + alerts + sender_name stored for clients
 import os
 import sqlite3
 from typing import Any, Dict, List, Optional
@@ -37,16 +37,15 @@ def init_db():
     )
     """)
 
-    # per-sender countdown
     cur.execute("""
     CREATE TABLE IF NOT EXISTS subscriptions (
       sender_id TEXT PRIMARY KEY,
+      sender_name TEXT NOT NULL DEFAULT 'Unknown',
       renewed_until_iso TEXT NOT NULL,
       updated_at_iso TEXT NOT NULL
     )
     """)
 
-    # ✅ alerts (e.g. 5_days_left)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,16 +59,15 @@ def init_db():
     )
     """)
 
-    # unique per sender+kind+renewed_until so you only get 1 warning per cycle
     cur.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_unique
     ON alerts(sender_id, kind, renewed_until_iso)
     """)
 
-    # safe alters if DB existed earlier
     for stmt in [
         "ALTER TABLE renewals ADD COLUMN done INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE renewals ADD COLUMN done_at_iso TEXT",
+        "ALTER TABLE subscriptions ADD COLUMN sender_name TEXT NOT NULL DEFAULT 'Unknown'",
     ]:
         try:
             cur.execute(stmt)
@@ -197,40 +195,56 @@ def get_all_renewals(limit: int = 300) -> List[Dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
-# =======================
-# subscriptions
-# =======================
-
 def get_subscription(sender_id: str) -> Optional[Dict[str, Any]]:
     con = _con()
     cur = con.cursor()
     cur.execute(
-        "SELECT sender_id, renewed_until_iso, updated_at_iso FROM subscriptions WHERE sender_id=?",
+        """
+        SELECT sender_id, sender_name, renewed_until_iso, updated_at_iso
+        FROM subscriptions
+        WHERE sender_id=?
+        """,
         (sender_id,),
     )
     row = cur.fetchone()
     con.close()
     if not row:
         return None
-    return {"sender_id": row[0], "renewed_until": row[1], "updated_at": row[2]}
+    return {
+        "sender_id": row[0],
+        "sender_name": row[1],
+        "renewed_until": row[2],
+        "updated_at": row[3],
+    }
 
 
 def list_subscriptions(limit: int = 2000) -> List[Dict[str, Any]]:
     con = _con()
     cur = con.cursor()
     cur.execute(
-        "SELECT sender_id, renewed_until_iso, updated_at_iso FROM subscriptions ORDER BY updated_at_iso DESC LIMIT ?",
+        """
+        SELECT sender_id, sender_name, renewed_until_iso, updated_at_iso
+        FROM subscriptions
+        ORDER BY updated_at_iso DESC
+        LIMIT ?
+        """,
         (limit,),
     )
     rows = cur.fetchall()
     con.close()
+
     out = []
     for r in rows:
-        out.append({"sender_id": r[0], "renewed_until": r[1], "updated_at": r[2]})
+        out.append({
+            "sender_id": r[0],
+            "sender_name": r[1],
+            "renewed_until": r[2],
+            "updated_at": r[3],
+        })
     return out
 
 
-def extend_subscription(sender_id: str, received_at_dt: datetime, days: int = 60) -> datetime:
+def extend_subscription(sender_id: str, sender_name: str, received_at_dt: datetime, days: int = 60) -> datetime:
     """
     Start or extend:
       base = max(existing_until, received_at_dt)
@@ -253,27 +267,25 @@ def extend_subscription(sender_id: str, received_at_dt: datetime, days: int = 60
 
     renewed_until = base_dt + timedelta(days=int(days))
     now_iso = datetime.now(timezone.utc).isoformat()
+    safe_name = (sender_name or "Unknown").strip()[:100] or "Unknown"
 
     con = _con()
     cur = con.cursor()
     cur.execute(
         """
-        INSERT INTO subscriptions(sender_id, renewed_until_iso, updated_at_iso)
-        VALUES(?, ?, ?)
+        INSERT INTO subscriptions(sender_id, sender_name, renewed_until_iso, updated_at_iso)
+        VALUES(?, ?, ?, ?)
         ON CONFLICT(sender_id) DO UPDATE SET
+          sender_name=excluded.sender_name,
           renewed_until_iso=excluded.renewed_until_iso,
           updated_at_iso=excluded.updated_at_iso
         """,
-        (sender_id, renewed_until.isoformat(), now_iso),
+        (sender_id, safe_name, renewed_until.isoformat(), now_iso),
     )
     con.commit()
     con.close()
     return renewed_until
 
-
-# =======================
-# alerts (5 days left)
-# =======================
 
 def add_alert_if_new(sender_id: str, kind: str, renewed_until_iso: str, remaining_days: int) -> None:
     con = _con()
@@ -306,6 +318,7 @@ def get_open_alerts(limit: int = 50) -> List[Dict[str, Any]]:
     )
     rows = cur.fetchall()
     con.close()
+
     out = []
     for r in rows:
         out.append({
