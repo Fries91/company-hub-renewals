@@ -1,4 +1,4 @@
-# app.py ✅ COMPLETE: 60-day countdown + reply payload (X days left) + 5-day warning alerts
+# app.py ✅ COMPLETE: 60-day countdown + reply payload + 5-day warning alerts + client names
 import os
 import time
 import threading
@@ -17,7 +17,7 @@ from db import (
     delete_record,
     get_setting,
     set_setting,
-    # subscriptions
+    # subscriptions / clients
     get_subscription,
     extend_subscription,
     list_subscriptions,
@@ -35,13 +35,12 @@ app = Flask(__name__)
 TORN_API_KEY = (os.getenv("TORN_API_KEY") or "").strip()
 POLL_SECONDS = int(os.getenv("POLL_SECONDS") or "30")
 
-# ✅ 60 day countdown
 RENEW_DAYS = int(os.getenv("RENEW_DAYS") or "60")
-
-# ✅ warning threshold
 WARN_DAYS = int(os.getenv("WARN_DAYS") or "5")
-
 PORT = int(os.getenv("PORT") or "10000")
+
+# ✅ changed from 100 to 50
+RENEW_QTY_REQUIRED = int(os.getenv("RENEW_QTY_REQUIRED") or "50")
 
 _booted = False
 _last_poll_error = None
@@ -66,7 +65,7 @@ def _ceil_days_left(renewed_until_iso: str) -> int:
 
 def check_warning_alerts():
     """
-    Create a single 5-days-left alert per sender per renewed_until.
+    Create a single warning alert per sender per renewed_until.
     """
     subs = list_subscriptions(limit=2000)
     for s in subs:
@@ -77,13 +76,39 @@ def check_warning_alerts():
 
         days_left = _ceil_days_left(renewed_until)
         if 0 < days_left <= WARN_DAYS:
-            # unique per sender+renewed_until+kind
             add_alert_if_new(
                 sender_id=str(sender_id),
                 kind=f"{WARN_DAYS}_days_left",
                 renewed_until_iso=renewed_until,
                 remaining_days=days_left,
             )
+
+
+def _enrich_clients(rows):
+    out = []
+    now = datetime.now(timezone.utc)
+    for s in rows:
+        sender_id = str(s.get("sender_id") or "").strip()
+        sender_name = s.get("sender_name") or "Unknown"
+        renewed_until = s.get("renewed_until") or ""
+        updated_at = s.get("updated_at") or ""
+        remaining_days = _ceil_days_left(renewed_until)
+        active = remaining_days > 0
+
+        out.append({
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "renewed_until": renewed_until,
+            "updated_at": updated_at,
+            "remaining_days": remaining_days,
+            "active": active,
+            "compose_url": f"https://www.torn.com/messages.php#/p=compose&XID={sender_id}" if sender_id else "",
+            "profile_url": f"https://www.torn.com/profiles.php?XID={sender_id}" if sender_id else "",
+            "server_time": now.isoformat(),
+        })
+
+    out.sort(key=lambda x: (not x["active"], x["remaining_days"], (x["sender_name"] or "").lower()))
+    return out
 
 
 def poll_loop():
@@ -119,9 +144,8 @@ def poll_loop():
                     continue
 
                 ev_text = (ev.get("event") or "")
-                match = extract_xanax_payment(ev_text, qty_required=100)
+                match = extract_xanax_payment(ev_text, qty_required=RENEW_QTY_REQUIRED)
 
-                # advance checkpoint even if not a payment
                 max_ts = max(max_ts, ts)
 
                 if not match:
@@ -129,22 +153,25 @@ def poll_loop():
 
                 sender_id = match.get("sender_id")
                 sender_name = match.get("sender_name") or "Unknown"
-                qty = match.get("qty") or 100
+                qty = int(match.get("qty") or RENEW_QTY_REQUIRED)
 
                 received_at = datetime.fromtimestamp(ts, tz=timezone.utc)
 
-                # ✅ START or EXTEND sender countdown by 60 days
                 if sender_id:
-                    renewed_until = extend_subscription(str(sender_id), received_at, days=RENEW_DAYS)
+                    renewed_until = extend_subscription(
+                        sender_id=str(sender_id),
+                        sender_name=str(sender_name),
+                        received_at_dt=received_at,
+                        days=RENEW_DAYS,
+                    )
                 else:
                     renewed_until = received_at + timedelta(days=RENEW_DAYS)
 
-                # log the event (keeps open/records UI)
                 add_renewal_if_new(
                     event_id=eid,
                     sender_id=str(sender_id) if sender_id else None,
                     sender_name=str(sender_name),
-                    qty=int(qty),
+                    qty=qty,
                     received_at_iso=received_at.isoformat(),
                     renewed_until_iso=renewed_until.isoformat(),
                     raw_text=ev_text[:1000],
@@ -153,7 +180,6 @@ def poll_loop():
             if max_ts > last_ts:
                 set_setting(SET_LAST_TS, str(max_ts))
 
-            # ✅ after polling, generate 5-day warnings
             check_warning_alerts()
 
         except Exception as e:
@@ -191,6 +217,7 @@ def health():
         "poll_seconds": POLL_SECONDS,
         "renew_days": RENEW_DAYS,
         "warn_days": WARN_DAYS,
+        "renew_qty_required": RENEW_QTY_REQUIRED,
         "last_seen_event_ts": get_setting(SET_LAST_TS, "0"),
         "server_time": datetime.now(timezone.utc).isoformat(),
     })
@@ -199,20 +226,21 @@ def health():
 @app.route("/state", methods=["GET"])
 @app.route("/state/", methods=["GET"])
 def state():
+    clients = _enrich_clients(list_subscriptions(limit=2000))
     return _json_ok({
         "renew_days": RENEW_DAYS,
         "warn_days": WARN_DAYS,
+        "renew_qty_required": RENEW_QTY_REQUIRED,
         "last_poll_at": _last_poll_at,
         "last_error": _last_poll_error,
         "renewals_open": get_open_renewals(limit=50),
         "renewals_records": get_all_renewals(limit=300),
-        # ✅ open warnings
         "alerts_open": get_open_alerts(limit=50),
+        "clients": clients,
         "server_time": datetime.now(timezone.utc).isoformat(),
     })
 
 
-# ✅ status endpoint (remaining days/seconds)
 @app.route("/api/subscription/status", methods=["GET"])
 def api_sub_status():
     sender_id = str(request.args.get("sender_id") or "").strip()
@@ -224,8 +252,6 @@ def api_sub_status():
         return _json_ok({"ok": True, "active": False, "sender_id": sender_id})
 
     renewed_until_iso = sub["renewed_until"]
-    now = datetime.now(timezone.utc)
-
     remaining_days = _ceil_days_left(renewed_until_iso)
     active = remaining_days > 0
 
@@ -233,13 +259,13 @@ def api_sub_status():
         "ok": True,
         "active": active,
         "sender_id": sender_id,
+        "sender_name": sub.get("sender_name") or "Unknown",
         "renewed_until": renewed_until_iso,
         "remaining_days": remaining_days,
-        "server_time": now.isoformat(),
+        "server_time": datetime.now(timezone.utc).isoformat(),
     })
 
 
-# ✅ reply payload: "Renewal accepted — currently have X days left" + compose URL for that XID
 @app.route("/api/reply_payload", methods=["GET"])
 def api_reply_payload():
     sender_id = str(request.args.get("sender_id") or "").strip()
@@ -248,11 +274,13 @@ def api_reply_payload():
 
     sub = get_subscription(sender_id)
     renewed_until_iso = (sub or {}).get("renewed_until") or ""
+    sender_name = (sub or {}).get("sender_name") or "Unknown"
     remaining_days = _ceil_days_left(renewed_until_iso)
     active = remaining_days > 0
 
     body = (
         f"Renewal accepted ✅\n"
+        f"Client: {sender_name} [{sender_id}]\n"
         f"You currently have {remaining_days} day(s) left.\n"
         f"Renewed until (UTC): {renewed_until_iso or 'N/A'}\n"
         f"\nThank you for using my service.\n"
@@ -264,6 +292,7 @@ def api_reply_payload():
     return _json_ok({
         "ok": True,
         "sender_id": sender_id,
+        "sender_name": sender_name,
         "active": active,
         "renewed_until": renewed_until_iso,
         "remaining_days": remaining_days,
@@ -273,7 +302,6 @@ def api_reply_payload():
     })
 
 
-# ✅ warning payload: "5 days left of hub access"
 @app.route("/api/warn_payload", methods=["GET"])
 def api_warn_payload():
     sender_id = str(request.args.get("sender_id") or "").strip()
@@ -282,10 +310,12 @@ def api_warn_payload():
 
     sub = get_subscription(sender_id)
     renewed_until_iso = (sub or {}).get("renewed_until") or ""
+    sender_name = (sub or {}).get("sender_name") or "Unknown"
     remaining_days = _ceil_days_left(renewed_until_iso)
 
     body = (
         f"⚠️ {WARN_DAYS} days left of hub access.\n"
+        f"Client: {sender_name} [{sender_id}]\n"
         f"You currently have {remaining_days} day(s) remaining.\n"
         f"Renewed until (UTC): {renewed_until_iso or 'N/A'}\n"
     )
@@ -294,6 +324,7 @@ def api_warn_payload():
     return _json_ok({
         "ok": True,
         "sender_id": sender_id,
+        "sender_name": sender_name,
         "renewed_until": renewed_until_iso,
         "remaining_days": remaining_days,
         "message_body": body,
@@ -302,7 +333,6 @@ def api_warn_payload():
     })
 
 
-# ✅ ack an alert so it stops warning you
 @app.route("/api/alerts/ack", methods=["POST"])
 def api_alert_ack():
     data = request.get_json(force=True, silent=True) or {}
