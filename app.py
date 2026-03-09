@@ -1,4 +1,4 @@
-# app.py ✅ COMPLETE: 60-day countdown + reply payload + 5-day warning alerts + client names
+# app.py ✅ COMPLETE: 45-day countdown + reply payload + 5-day warning alerts + client names
 import os
 import time
 import threading
@@ -17,11 +17,9 @@ from db import (
     delete_record,
     get_setting,
     set_setting,
-    # subscriptions / clients
     get_subscription,
     extend_subscription,
     list_subscriptions,
-    # alerts
     add_alert_if_new,
     get_open_alerts,
     ack_alert,
@@ -35,12 +33,16 @@ app = Flask(__name__)
 TORN_API_KEY = (os.getenv("TORN_API_KEY") or "").strip()
 POLL_SECONDS = int(os.getenv("POLL_SECONDS") or "30")
 
-RENEW_DAYS = int(os.getenv("RENEW_DAYS") or "60")
-WARN_DAYS = int(os.getenv("WARN_DAYS") or "5")
-PORT = int(os.getenv("PORT") or "10000")
+# ✅ now 45 days
+RENEW_DAYS = int(os.getenv("RENEW_DAYS") or "45")
 
-# ✅ changed from 100 to 50
+# ✅ warning threshold
+WARN_DAYS = int(os.getenv("WARN_DAYS") or "5")
+
+# ✅ minimum required Xanax
 RENEW_QTY_REQUIRED = int(os.getenv("RENEW_QTY_REQUIRED") or "50")
+
+PORT = int(os.getenv("PORT") or "10000")
 
 _booted = False
 _last_poll_error = None
