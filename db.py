@@ -244,7 +244,7 @@ def list_subscriptions(limit: int = 2000) -> List[Dict[str, Any]]:
     return out
 
 
-def extend_subscription(sender_id: str, sender_name: str, received_at_dt: datetime, days: int = 60) -> datetime:
+def extend_subscription(sender_id: str, sender_name: str, received_at_dt: datetime, days: int = 45) -> datetime:
     """
     Start or extend:
       base = max(existing_until, received_at_dt)
